@@ -8,7 +8,30 @@ use crate::provider::{Provider, ProviderManager};
 use indexmap::IndexMap;
 use rusqlite::{params, Connection};
 use serde_json::json;
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::OsString, path::Path};
+
+struct ConfigDirEnvGuard {
+    original: Option<OsString>,
+}
+
+impl ConfigDirEnvGuard {
+    fn set(path: &Path) -> Self {
+        let original = std::env::var_os("CC_SWITCH_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("CC_SWITCH_CONFIG_DIR", path);
+        }
+        Self { original }
+    }
+}
+
+impl Drop for ConfigDirEnvGuard {
+    fn drop(&mut self) {
+        match self.original.as_ref() {
+            Some(value) => unsafe { std::env::set_var("CC_SWITCH_CONFIG_DIR", value) },
+            None => unsafe { std::env::remove_var("CC_SWITCH_CONFIG_DIR") },
+        }
+    }
+}
 
 const LEGACY_SCHEMA_SQL: &str = r#"
     CREATE TABLE providers (
@@ -176,9 +199,37 @@ fn schema_migration_rejects_future_version() {
 
     let err =
         Database::apply_schema_migrations_on_conn(&conn).expect_err("should reject higher version");
+    let message = err.to_string();
+    assert!(message.contains("由较新版本的 CC Switch 创建"));
+    assert!(message.contains(&format!("数据库版本: {}", SCHEMA_VERSION + 1)));
+    assert!(message.contains(&format!("最高支持数据库版本: {SCHEMA_VERSION}")));
+    assert!(message.contains("cc-switch update"));
+}
+
+#[test]
+#[serial_test::serial]
+fn init_rejects_future_schema_before_creating_tables() {
+    let _lock = crate::test_support::lock_test_home_and_settings();
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let _guard = ConfigDirEnvGuard::set(temp.path());
+    let db_path = temp.path().join("cc-switch.db");
+    let conn = Connection::open(&db_path).expect("open db");
+    Database::set_user_version(&conn, SCHEMA_VERSION + 1).expect("set future version");
+    drop(conn);
+
+    let err = match Database::init() {
+        Ok(_) => panic!("future schema should fail init"),
+        Err(err) => err,
+    };
     assert!(
-        err.to_string().contains("数据库版本过新"),
+        err.to_string().contains("由较新版本的 CC Switch 创建"),
         "unexpected error: {err}"
+    );
+
+    let conn = Connection::open(&db_path).expect("reopen db");
+    assert!(
+        !Database::table_exists(&conn, "providers").expect("check providers table"),
+        "future schema init should not create tables"
     );
 }
 

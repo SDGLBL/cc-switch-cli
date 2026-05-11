@@ -178,7 +178,7 @@ mod tests {
         let err = initialize_startup_state_if_needed(&cli.command)
             .expect_err("provider command should still require startup state");
         assert!(
-            err.to_string().contains("数据库版本过新"),
+            err.to_string().contains("由较新版本的 CC Switch 创建"),
             "unexpected error: {err}"
         );
     }

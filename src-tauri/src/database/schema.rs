@@ -361,9 +361,7 @@ impl Database {
         if version > SCHEMA_VERSION {
             conn.execute("ROLLBACK TO schema_migration;", []).ok();
             conn.execute("RELEASE schema_migration;", []).ok();
-            return Err(AppError::Database(format!(
-                "数据库版本过新（{version}），当前应用仅支持 {SCHEMA_VERSION}，请升级应用后再尝试。"
-            )));
+            return Err(Self::future_schema_error(version));
         }
 
         let result = (|| {
@@ -1837,6 +1835,16 @@ impl Database {
     }
 
     // --- 辅助方法 ---
+
+    pub(crate) fn future_schema_error(version: i32) -> AppError {
+        AppError::Database(format!(
+            "当前数据库由较新版本的 CC Switch 创建，旧版本无法打开。\n\
+             数据库版本: {version}\n\
+             当前应用: v{}，最高支持数据库版本: {SCHEMA_VERSION}\n\
+             请运行 `cc-switch update` 升级到最新版；如果仍然失败，请从 GitHub Releases 安装最新版本。",
+            env!("CARGO_PKG_VERSION")
+        ))
+    }
 
     pub(crate) fn get_user_version(conn: &Connection) -> Result<i32, AppError> {
         conn.query_row("PRAGMA user_version;", [], |row| row.get(0))

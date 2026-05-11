@@ -99,12 +99,15 @@ impl Database {
             conn: Mutex::new(conn),
             runtime_key: format!("file:{}", db_path.display()),
         };
-        db.create_tables()?;
 
         {
             let conn = lock_conn!(db.conn);
             let version = Self::get_user_version(&conn)?;
             drop(conn);
+
+            if version > SCHEMA_VERSION {
+                return Err(Self::future_schema_error(version));
+            }
 
             if version > 0 && version < SCHEMA_VERSION {
                 log::info!(
@@ -116,6 +119,7 @@ impl Database {
             }
         }
 
+        db.create_tables()?;
         db.apply_schema_migrations()?;
         db.ensure_model_pricing_seeded()?;
 
