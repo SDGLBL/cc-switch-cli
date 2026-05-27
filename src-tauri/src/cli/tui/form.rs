@@ -10,6 +10,7 @@ mod provider_json;
 mod provider_state;
 mod provider_state_loading;
 mod provider_templates;
+mod provider_usage_query;
 
 #[cfg(test)]
 mod tests;
@@ -22,8 +23,8 @@ pub(crate) use codex_config::parse_codex_config_snippet;
 pub(crate) use provider_json::claude_hide_attribution_enabled;
 pub(crate) use provider_json::strip_common_config_from_settings;
 pub(crate) use provider_json::{normalize_usage_interval, normalize_usage_timeout};
-pub(crate) use provider_state::detect_balance_provider_for_usage_query;
 pub(crate) use provider_state::resolve_provider_id_for_submit;
+pub(crate) use provider_usage_query::detect_balance_provider_for_usage_query;
 
 pub const OPENCLAW_DEFAULT_API_PROTOCOL: &str = "openai-completions";
 pub const OPENCLAW_DEFAULT_USER_AGENT: &str =
