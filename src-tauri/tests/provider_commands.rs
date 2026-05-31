@@ -12,7 +12,8 @@ use cc_switch_lib::{
 #[path = "support.rs"]
 mod support;
 use support::{
-    ensure_test_home, lock_test_mutex, reset_test_fs, state_from_config, CurrentDirGuard,
+    enable_codex_official_auth_preservation, ensure_test_home, lock_test_mutex, reset_test_fs,
+    state_from_config, CurrentDirGuard,
 };
 
 fn find_free_port() -> u16 {
@@ -550,6 +551,7 @@ fn provider_duplicate_missing_source_returns_error_without_creating_provider() {
 fn switch_provider_updates_codex_live_and_state() {
     let _guard = lock_test_mutex();
     reset_test_fs();
+    enable_codex_official_auth_preservation();
     let _home = ensure_test_home();
 
     let legacy_auth = json!({"OPENAI_API_KEY": "legacy-key"});

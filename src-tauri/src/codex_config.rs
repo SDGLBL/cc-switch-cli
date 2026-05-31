@@ -773,7 +773,10 @@ fn set_codex_experimental_bearer_token(config_text: &str, token: &str) -> Result
     Ok(doc.to_string())
 }
 
-fn remove_codex_experimental_bearer_token(config_text: &str) -> Result<String, AppError> {
+pub fn remove_codex_experimental_bearer_token_if(
+    config_text: &str,
+    predicate: impl Fn(&str) -> bool,
+) -> Result<String, AppError> {
     if config_text.trim().is_empty() || !config_text.contains("experimental_bearer_token") {
         return Ok(config_text.to_string());
     }
@@ -789,12 +792,30 @@ fn remove_codex_experimental_bearer_token(config_text: &str) -> Result<String, A
             .and_then(|table| table.get_mut(provider_id.as_str()))
             .and_then(|item| item.as_table_mut())
         {
-            provider_table.remove("experimental_bearer_token");
+            let should_remove = provider_table
+                .get("experimental_bearer_token")
+                .and_then(|item| item.as_str())
+                .map(str::trim)
+                .is_some_and(&predicate);
+            if should_remove {
+                provider_table.remove("experimental_bearer_token");
+            }
         }
     }
 
-    doc.as_table_mut().remove("experimental_bearer_token");
+    let should_remove_top_level = doc
+        .get("experimental_bearer_token")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .is_some_and(&predicate);
+    if should_remove_top_level {
+        doc.as_table_mut().remove("experimental_bearer_token");
+    }
     Ok(doc.to_string())
+}
+
+fn remove_codex_experimental_bearer_token(config_text: &str) -> Result<String, AppError> {
+    remove_codex_experimental_bearer_token_if(config_text, |_| true)
 }
 
 /// Read the current Codex live settings as a `{ auth, config }` object.
@@ -822,15 +843,19 @@ pub fn read_codex_live_settings() -> Result<Value, AppError> {
 
 /// Route a Codex live write between full auth+config or config-only.
 ///
-/// Official providers with usable login material own `auth.json`; everyone
-/// else only touches `config.toml` so the user's ChatGPT login cache survives
-/// third-party switches.
+/// Official providers with usable login material own `auth.json`. Third-party
+/// providers only touch `config.toml` when the compatibility setting is enabled
+/// so the user's ChatGPT login cache survives provider switches.
 pub fn write_codex_live_for_provider(
     category: Option<&str>,
     auth: &Value,
     config_text: Option<&str>,
 ) -> Result<(), AppError> {
-    if category == Some("official") && codex_auth_has_login_material(auth) {
+    let should_write_auth = (category == Some("official") && codex_auth_has_login_material(auth))
+        || (category != Some("official")
+            && !crate::settings::preserve_codex_official_auth_on_switch());
+
+    if should_write_auth {
         write_codex_live_atomic(auth, config_text)
     } else {
         let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
@@ -1131,6 +1156,41 @@ wire_api = "responses"
         assert_eq!(
             extract_codex_experimental_bearer_token(&result).as_deref(),
             Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn remove_codex_experimental_bearer_token_if_only_removes_matching_values() {
+        let input = r#"experimental_bearer_token = "sk-real"
+model_provider = "vendor_alpha"
+model = "gpt-5.4"
+
+[model_providers.vendor_alpha]
+name = "Vendor Alpha"
+base_url = "https://alpha.example/v1"
+wire_api = "responses"
+experimental_bearer_token = "PROXY_MANAGED"
+"#;
+
+        let result =
+            remove_codex_experimental_bearer_token_if(input, |token| token == "PROXY_MANAGED")
+                .expect("remove matching proxy placeholder");
+        let parsed: toml::Value = toml::from_str(&result).expect("parse cleaned config");
+
+        assert_eq!(
+            parsed
+                .get("experimental_bearer_token")
+                .and_then(|value| value.as_str()),
+            Some("sk-real"),
+            "real top-level token must not be removed by placeholder cleanup"
+        );
+        assert!(
+            parsed
+                .get("model_providers")
+                .and_then(|value| value.get("vendor_alpha"))
+                .and_then(|value| value.get("experimental_bearer_token"))
+                .is_none(),
+            "provider-scoped proxy placeholder should be removed"
         );
     }
 

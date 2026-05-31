@@ -1268,11 +1268,21 @@ impl ProxyService {
     }
 
     fn is_codex_live_taken_over(config: &Value) -> bool {
-        config
+        if config
             .get("auth")
             .and_then(|auth| auth.get("OPENAI_API_KEY"))
             .and_then(Value::as_str)
             .is_some_and(|value| value == PROXY_TOKEN_PLACEHOLDER)
+        {
+            return true;
+        }
+
+        config
+            .get("config")
+            .and_then(Value::as_str)
+            .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
+            .as_deref()
+            == Some(PROXY_TOKEN_PLACEHOLDER)
     }
 
     fn is_gemini_live_taken_over(config: &Value) -> bool {
@@ -2257,8 +2267,16 @@ impl ProxyService {
                 }
 
                 if let Some(config_text) = live.get("config").and_then(Value::as_str) {
-                    live["config"] =
-                        json!(codex_toml::remove_loopback_base_url_from_toml(config_text));
+                    let config_text = codex_toml::remove_loopback_base_url_from_toml(config_text);
+                    let config_text =
+                        crate::codex_config::remove_codex_experimental_bearer_token_if(
+                            &config_text,
+                            |token| token == PROXY_TOKEN_PLACEHOLDER,
+                        )
+                        .map_err(|error| {
+                            format!("clear Codex takeover placeholder failed: {error}")
+                        })?;
+                    live["config"] = json!(config_text);
                 }
             }
             AppType::Gemini => {
@@ -2325,6 +2343,28 @@ impl ProxyService {
         provider: Option<&Provider>,
     ) -> Result<(), String> {
         let Some(provider) = provider else {
+            if crate::settings::preserve_codex_official_auth_on_switch() {
+                if let (Some(auth), Some(config_text)) = (
+                    config.get("auth"),
+                    config.get("config").and_then(Value::as_str),
+                ) {
+                    if auth
+                        .get("OPENAI_API_KEY")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value == PROXY_TOKEN_PLACEHOLDER)
+                    {
+                        let live_config = crate::codex_config::prepare_codex_provider_live_config(
+                            auth,
+                            config_text,
+                        )
+                        .map_err(|error| format!("write Codex live config failed: {error}"))?;
+                        crate::codex_config::write_codex_live_config_atomic(Some(&live_config))
+                            .map_err(|error| format!("write Codex live config failed: {error}"))?;
+                        return Ok(());
+                    }
+                }
+            }
+
             return self.write_codex_live_verbatim(config);
         };
 
@@ -2360,29 +2400,34 @@ impl ProxyService {
     }
 
     fn write_codex_live_verbatim(&self, config: &Value) -> Result<(), String> {
-        let auth = config
-            .get("auth")
-            .filter(|value| !value.as_object().is_some_and(|object| object.is_empty()));
+        let auth = config.get("auth");
         let config_text = config.get("config").and_then(Value::as_str);
-        let auth_path = get_codex_auth_path();
 
         // Proxy restore applies the saved backup config without another stable-provider rewrite.
         match (auth, config_text) {
             (Some(auth), Some(config_text)) => {
-                crate::codex_config::write_codex_live_with_catalog(config, auth, Some(config_text))
+                if auth.as_object().is_some_and(|object| object.is_empty()) {
+                    let auth_path = get_codex_auth_path();
+                    if auth_path.exists() {
+                        std::fs::remove_file(&auth_path)
+                            .map_err(|error| format!("remove Codex auth.json failed: {error}"))?;
+                    }
+                    write_text_file(&get_codex_config_path(), config_text)
+                        .map_err(|error| format!("write Codex config.toml failed: {error}"))
+                } else {
+                    crate::codex_config::write_codex_live_with_catalog(
+                        config,
+                        auth,
+                        Some(config_text),
+                    )
                     .map_err(|error| format!("write Codex live config failed: {error}"))
+                }
             }
             (Some(auth), None) => write_json_file(&get_codex_auth_path(), auth)
                 .map_err(|error| format!("write Codex auth.json failed: {error}")),
             (None, Some(config_text)) => write_text_file(&get_codex_config_path(), config_text)
                 .map_err(|error| format!("write Codex config.toml failed: {error}")),
-            (None, None) => {
-                if auth_path.exists() {
-                    std::fs::remove_file(&auth_path)
-                        .map_err(|error| format!("remove Codex auth.json failed: {error}"))?;
-                }
-                Ok(())
-            }
+            (None, None) => Ok(()),
         }
     }
 
@@ -4983,6 +5028,11 @@ base_url = "https://new.example/v1"
     fn codex_custom_provider_live_write_preserves_oauth_auth_json() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = TestHomeEnvGuard::set(temp_home.path());
+        crate::settings::update_settings(crate::settings::AppSettings {
+            preserve_codex_official_auth_on_switch: true,
+            ..Default::default()
+        })
+        .expect("enable Codex official auth preservation");
 
         let db = Arc::new(Database::memory().expect("init db"));
         let service = ProxyService::new(db);
@@ -5114,6 +5164,85 @@ wire_api = "responses"
 
     #[test]
     #[serial]
+    fn codex_custom_provider_live_write_can_overwrite_auth_when_preserve_disabled() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestHomeEnvGuard::set(temp_home.path());
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db);
+        let oauth_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            }
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &oauth_auth,
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5.4"
+"#,
+            ),
+        )
+        .expect("seed live OAuth auth");
+
+        let mut provider = Provider::with_id(
+            "rightcode".to_string(),
+            "RightCode".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "rightcode-key"
+                },
+                "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+        let takeover_settings = json!({
+            "auth": {
+                "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+            },
+            "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+        });
+
+        service
+            .write_codex_live_for_provider(&takeover_settings, Some(&provider))
+            .expect("write provider-driven Codex live config");
+
+        let live_auth: Value = read_json_file(&get_codex_auth_path()).expect("read live auth");
+        assert_eq!(
+            live_auth,
+            json!({
+                "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+            }),
+            "disabled preservation should let third-party switches overwrite auth.json"
+        );
+
+        let live_config =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live config");
+        assert!(
+            !live_config.contains("experimental_bearer_token"),
+            "provider token should stay in auth.json when preservation is disabled"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn codex_config_only_restore_preserves_oauth_auth_json() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = TestHomeEnvGuard::set(temp_home.path());
@@ -5150,6 +5279,260 @@ base_url = "https://custom.example/v1"
         assert_eq!(
             live_auth, oauth_auth,
             "config-only Codex restores must not delete ChatGPT OAuth login state"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_config_placeholder_marks_live_taken_over() {
+        let live = json!({
+            "auth": {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "oauth-access"
+                }
+            },
+            "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+experimental_bearer_token = "PROXY_MANAGED"
+"#
+        });
+
+        assert!(
+            ProxyService::is_codex_live_taken_over(&live),
+            "config.toml proxy placeholder should mark Codex live config as taken over"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_takeover_cleanup_removes_config_placeholder_without_touching_oauth_auth() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestHomeEnvGuard::set(temp_home.path());
+
+        let service = ProxyService::new(Arc::new(Database::memory().expect("init db")));
+        let oauth_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            }
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &oauth_auth,
+            Some(
+                r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+experimental_bearer_token = "PROXY_MANAGED"
+"#,
+            ),
+        )
+        .expect("seed taken-over Codex live config");
+
+        assert!(
+            service.detect_takeover_in_live_config_for_app(&AppType::Codex),
+            "config.toml proxy placeholder should be detected before cleanup"
+        );
+
+        service
+            .clear_stale_takeover_from_live_config(&AppType::Codex)
+            .expect("clear stale Codex takeover");
+
+        let live_auth: Value = read_json_file(&get_codex_auth_path()).expect("read live auth");
+        assert_eq!(
+            live_auth, oauth_auth,
+            "cleanup should preserve ChatGPT OAuth auth.json"
+        );
+
+        let live_config =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live config");
+        assert!(
+            !live_config.contains(PROXY_TOKEN_PLACEHOLDER),
+            "cleanup should remove config.toml proxy bearer placeholder"
+        );
+        assert!(
+            !live_config.contains("http://127.0.0.1:15721"),
+            "cleanup should remove local proxy base_url"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_takeover_write_without_provider_preserves_oauth_auth_json() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestHomeEnvGuard::set(temp_home.path());
+        crate::settings::update_settings(crate::settings::AppSettings {
+            preserve_codex_official_auth_on_switch: true,
+            ..Default::default()
+        })
+        .expect("enable Codex official auth preservation");
+
+        let service = ProxyService::new(Arc::new(Database::memory().expect("init db")));
+        let oauth_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            }
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &oauth_auth,
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5.4"
+"#,
+            ),
+        )
+        .expect("seed live OAuth auth");
+
+        service
+            .write_codex_live_for_provider(
+                &json!({
+                    "auth": {
+                        "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                    },
+                    "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+                }),
+                None,
+            )
+            .expect("write takeover config without provider");
+
+        let live_auth: Value = read_json_file(&get_codex_auth_path()).expect("read live auth");
+        assert_eq!(
+            live_auth, oauth_auth,
+            "provider-less takeover write should not overwrite ChatGPT OAuth auth.json"
+        );
+
+        let live_config =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live config");
+        assert!(
+            live_config.contains(PROXY_TOKEN_PLACEHOLDER),
+            "proxy placeholder should be carried by config.toml"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_takeover_write_without_provider_overwrites_auth_when_preserve_disabled() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestHomeEnvGuard::set(temp_home.path());
+
+        let service = ProxyService::new(Arc::new(Database::memory().expect("init db")));
+        let oauth_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "oauth-id",
+                "access_token": "oauth-access"
+            }
+        });
+        crate::codex_config::write_codex_live_atomic(
+            &oauth_auth,
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5.4"
+"#,
+            ),
+        )
+        .expect("seed live OAuth auth");
+
+        service
+            .write_codex_live_for_provider(
+                &json!({
+                    "auth": {
+                        "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+                    },
+                    "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+"#
+                }),
+                None,
+            )
+            .expect("write takeover config without provider");
+
+        let live_auth: Value = read_json_file(&get_codex_auth_path()).expect("read live auth");
+        assert_eq!(
+            live_auth,
+            json!({
+                "OPENAI_API_KEY": PROXY_TOKEN_PLACEHOLDER
+            }),
+            "default disabled preservation should overwrite ChatGPT OAuth auth.json"
+        );
+
+        let live_config =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live config");
+        assert!(
+            !live_config.contains("experimental_bearer_token"),
+            "default disabled preservation should keep the placeholder in auth.json"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_empty_auth_restore_removes_existing_auth_json() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestHomeEnvGuard::set(temp_home.path());
+
+        let service = ProxyService::new(Arc::new(Database::memory().expect("init db")));
+        crate::codex_config::write_codex_live_atomic(
+            &json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "oauth-access"
+                }
+            }),
+            Some(
+                r#"model_provider = "openai"
+model = "gpt-5.4"
+"#,
+            ),
+        )
+        .expect("seed live OAuth auth");
+
+        service
+            .write_codex_live(&json!({
+                "auth": {},
+                "config": r#"model_provider = "rightcode"
+model = "gpt-5.4"
+
+[model_providers.rightcode]
+name = "RightCode"
+base_url = "https://rightcode.example/v1"
+wire_api = "responses"
+"#
+            }))
+            .expect("restore Codex live config with empty auth");
+
+        assert!(
+            !get_codex_auth_path().exists(),
+            "empty auth restore should remove stale Codex auth.json"
+        );
+        let live_config =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live config");
+        assert!(
+            live_config.contains("model_provider = \"rightcode\""),
+            "config.toml should still be restored when auth is empty"
         );
     }
 
