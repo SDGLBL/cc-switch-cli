@@ -10,8 +10,12 @@ use crate::cli::provider_quota::{
 use crate::cli::ui::{create_table, error, highlight, info, success, to_json, warning};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageData, UsageResult};
-use crate::services::{CredentialStatus, ProviderService, SpeedtestService, StreamCheckService};
+use crate::services::{
+    CodexOAuthService, CredentialStatus, ProviderService, SpeedtestService, StreamCheckService,
+};
 use crate::store::AppState;
+
+const AUTH_PROVIDER_CODEX_OAUTH: &str = "codex_oauth";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderModelFetchStrategy {
@@ -19,6 +23,13 @@ pub(crate) enum ProviderModelFetchStrategy {
     Anthropic,
     GoogleApiKey,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModelFetchSource {
+    Http(ModelFetchTarget),
+    CodexOAuth { account_id: Option<String> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelFetchTarget {
     base_url: String,
@@ -257,27 +268,49 @@ pub(crate) fn fetch_models_provider(app_type: AppType, id: &str) -> Result<(), A
     let provider = providers
         .get(id)
         .ok_or_else(|| AppError::Message(format!("Provider '{}' not found", id)))?;
-    let target = model_fetch_target(provider, &app_type)?;
+    let source = model_fetch_source(provider, &app_type)?;
 
     println!(
         "{}",
         info(&format!("Fetching models for '{}'...", provider.name))
     );
-    println!("{}", info(&format!("Endpoint: {}", target.base_url)));
+    match &source {
+        ModelFetchSource::Http(target) => {
+            println!("{}", info(&format!("Endpoint: {}", target.base_url)));
+        }
+        ModelFetchSource::CodexOAuth { account_id } => {
+            println!("{}", info("Endpoint: Codex OAuth managed account"));
+            if let Some(account_id) = account_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                println!("{}", info(&format!("Account: {}", account_id)));
+            }
+        }
+    }
     println!();
 
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| AppError::Message(format!("Failed to create async runtime: {}", e)))?;
 
-    let models = runtime.block_on(async {
-        crate::cli::tui::fetch_provider_models_for_tui(
-            &target.base_url,
-            Some(target.auth_value.as_str()),
-            to_tui_strategy(target.strategy),
-        )
-        .await
-        .map_err(AppError::Message)
-    })?;
+    let models = match &source {
+        ModelFetchSource::Http(target) => runtime.block_on(async {
+            crate::cli::tui::fetch_provider_models_for_tui(
+                &target.base_url,
+                Some(target.auth_value.as_str()),
+                to_tui_strategy(target.strategy),
+            )
+            .await
+            .map_err(AppError::Message)
+        })?,
+        ModelFetchSource::CodexOAuth { account_id } => runtime.block_on(async {
+            CodexOAuthService::get_models(account_id.as_deref())
+                .await
+                .map(|models| models.into_iter().map(|model| model.id).collect())
+                .map_err(AppError::Message)
+        })?,
+    };
 
     if models.is_empty() {
         println!("{}", info("No models returned."));
@@ -768,6 +801,26 @@ fn model_fetch_target(
     }
 }
 
+fn model_fetch_source(
+    provider: &Provider,
+    app_type: &AppType,
+) -> Result<ModelFetchSource, AppError> {
+    if matches!(app_type, AppType::Claude) && provider.is_codex_oauth() {
+        return Ok(ModelFetchSource::CodexOAuth {
+            account_id: codex_oauth_account_id(provider),
+        });
+    }
+
+    model_fetch_target(provider, app_type).map(ModelFetchSource::Http)
+}
+
+fn codex_oauth_account_id(provider: &Provider) -> Option<String> {
+    provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.managed_account_id_for(AUTH_PROVIDER_CODEX_OAUTH))
+}
+
 fn claude_uses_bearer_auth(provider: &Provider, base_url: &str) -> bool {
     if base_url.contains("openrouter.ai") {
         return true;
@@ -910,6 +963,7 @@ fn simplify_model_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
     use crate::services::{ExtraUsage, QuotaTier, SubscriptionQuota};
     use serde_json::json;
 
@@ -1129,6 +1183,54 @@ mod tests {
 
         assert_eq!(target.strategy, ProviderModelFetchStrategy::Bearer);
         assert_eq!(target.auth_value, "sk-openrouter");
+    }
+
+    #[test]
+    fn model_fetch_source_for_claude_codex_oauth_uses_managed_auth_without_config_key() {
+        let mut provider = Provider::with_id(
+            "codex".to_string(),
+            "Codex OAuth".to_string(),
+            json!({ "env": {} }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            ..Default::default()
+        });
+
+        let source = model_fetch_source(&provider, &AppType::Claude)
+            .expect("codex oauth provider should use managed auth");
+
+        assert_eq!(source, ModelFetchSource::CodexOAuth { account_id: None });
+    }
+
+    #[test]
+    fn model_fetch_source_for_claude_codex_oauth_keeps_bound_account_id() {
+        let mut provider = Provider::with_id(
+            "codex".to_string(),
+            "Codex OAuth".to_string(),
+            json!({ "env": {} }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("acc-123".to_string()),
+            }),
+            ..Default::default()
+        });
+
+        let source = model_fetch_source(&provider, &AppType::Claude)
+            .expect("codex oauth provider should use managed auth");
+
+        assert_eq!(
+            source,
+            ModelFetchSource::CodexOAuth {
+                account_id: Some("acc-123".to_string())
+            }
+        );
     }
 
     #[test]
