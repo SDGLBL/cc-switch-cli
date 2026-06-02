@@ -5,10 +5,10 @@ use super::{provider_inspect, provider_usage_query};
 use crate::app_config::AppType;
 use crate::cli::commands::provider_input::{
     build_provider_from_add_template, common_snippet_has_effective_config, current_timestamp,
-    display_provider_summary, generate_provider_id, prompt_basic_fields, prompt_optional_fields,
-    prompt_settings_config, prompt_settings_config_for_add, provider_add_template_choices,
-    provider_uses_common_config, set_provider_common_config_meta, supports_common_config,
-    validate_provider_add_template, OptionalFields, ProviderAddTemplate,
+    display_provider_summary, prompt_basic_fields, prompt_optional_fields,
+    prompt_provider_id_for_add, prompt_settings_config, prompt_settings_config_for_add,
+    provider_add_template_choices, provider_uses_common_config, set_provider_common_config_meta,
+    supports_common_config, validate_provider_add_template, OptionalFields, ProviderAddTemplate,
 };
 use crate::cli::i18n::texts;
 use crate::cli::ui::{highlight, info, success, warning};
@@ -476,7 +476,7 @@ fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Res
     // 2. 收集基本字段
     let mut provider = if template.is_custom() {
         let (name, website_url) = prompt_basic_fields(None)?;
-        let id = generate_provider_id(&name, &existing_ids);
+        let id = prompt_provider_id_for_add(&app_type, &name, &existing_ids)?;
         println!("{}", info(&texts::generated_id_message(&id)));
 
         let settings_config = prompt_settings_config_for_add(&app_type)?;
@@ -496,6 +496,9 @@ fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Res
         }
     } else {
         let mut provider = build_provider_from_add_template(&app_type, template, &existing_ids)?;
+        if matches!(app_type, AppType::Hermes | AppType::OpenClaw) {
+            provider.id = prompt_provider_id_for_add(&app_type, &provider.name, &existing_ids)?;
+        }
         if template.requires_settings_prompt() {
             provider.settings_config = prompt_settings_config(
                 &app_type,

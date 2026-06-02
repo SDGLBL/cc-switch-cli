@@ -1075,6 +1075,88 @@ fn add_first_provider_sets_current() {
 
 #[test]
 #[serial]
+fn provider_add_rejects_duplicate_id_without_overwriting_existing_provider() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    let state = state_from_config(config);
+
+    let first = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-1",
+                "ANTHROPIC_BASE_URL": "https://one.example"
+            }
+        }),
+        None,
+    );
+    ProviderService::add(&state, AppType::Claude, first).expect("first add should succeed");
+
+    let duplicate = Provider::with_id(
+        "p1".to_string(),
+        "Duplicate".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-2",
+                "ANTHROPIC_BASE_URL": "https://two.example"
+            }
+        }),
+        None,
+    );
+    let err = ProviderService::add(&state, AppType::Claude, duplicate)
+        .expect_err("duplicate add should be rejected");
+    assert!(err.to_string().contains("already exists"));
+
+    let cfg = state.config.read().expect("read config");
+    let manager = cfg.get_manager(&AppType::Claude).expect("claude manager");
+    let stored = manager
+        .providers
+        .get("p1")
+        .expect("original provider remains");
+    assert_eq!(stored.name, "First");
+    assert_eq!(
+        stored.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"],
+        "token-1"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_add_rejects_invalid_openclaw_provider_key() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::OpenClaw);
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "OpenClaw Provider".to_string(),
+        "OpenClaw Provider".to_string(),
+        json!({
+            "api": "openai-completions",
+            "models": [{ "id": "primary-model" }]
+        }),
+        None,
+    );
+
+    let err = ProviderService::add(&state, AppType::OpenClaw, provider)
+        .expect_err("invalid OpenClaw provider key should be rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains("Provider key")
+            && message.contains("lowercase")
+            && message.contains("hyphens"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+#[serial]
 fn provider_add_injects_coding_plan_usage_script_for_claude_provider() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());

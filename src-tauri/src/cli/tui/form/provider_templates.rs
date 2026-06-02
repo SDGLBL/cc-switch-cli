@@ -393,7 +393,8 @@ impl ProviderAddFormState {
         }
 
         if !self.id_is_manual && !self.name.is_blank() {
-            let id = crate::cli::commands::provider_input::generate_provider_id(
+            let id = crate::cli::commands::provider_input::generate_provider_id_for_app(
+                &self.app_type,
                 self.name.value.trim(),
                 existing_ids,
             );

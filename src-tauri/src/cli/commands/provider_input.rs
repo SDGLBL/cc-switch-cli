@@ -853,6 +853,33 @@ mod tests {
     }
 
     #[test]
+    fn cli_provider_add_manual_id_validation_matches_tui_additive_fields() {
+        let existing = vec!["taken".to_string()];
+
+        validate_provider_id_for_add(&AppType::Hermes, "hermes-one", &existing)
+            .expect("valid Hermes provider key should pass");
+        assert!(
+            validate_provider_id_for_add(&AppType::Hermes, "Hermes One", &existing).is_err(),
+            "Hermes provider key should keep the TUI lowercase/hyphen validation"
+        );
+        assert!(
+            validate_provider_id_for_add(&AppType::Hermes, "-bad", &existing).is_err(),
+            "Hermes provider key should reject leading hyphens like the TUI"
+        );
+        validate_provider_id_for_add(&AppType::OpenClaw, "openclaw-provider", &existing)
+            .expect("valid OpenClaw provider key should pass");
+        assert!(
+            validate_provider_id_for_add(&AppType::OpenClaw, "OpenClaw Provider", &existing)
+                .is_err(),
+            "OpenClaw provider key should keep the upstream lowercase/hyphen validation"
+        );
+
+        let err = validate_provider_id_for_add(&AppType::OpenClaw, "taken", &existing)
+            .expect_err("duplicate manual provider ids should be rejected before save");
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
     fn cli_claude_codex_oauth_template_matches_tui_contract() {
         let provider =
             build_provider_template_seed(&AppType::Claude, ProviderAddTemplate::CodexOauth, &[])
@@ -2540,6 +2567,76 @@ pub fn generate_provider_id(name: &str, existing_ids: &[String]) -> String {
         }
         counter += 1;
     }
+}
+
+pub fn generate_provider_id_for_app(
+    app_type: &AppType,
+    name: &str,
+    existing_ids: &[String],
+) -> String {
+    if ProviderService::is_provider_key_app(app_type) {
+        ProviderService::generate_provider_key(name, existing_ids)
+    } else {
+        generate_provider_id(name, existing_ids)
+    }
+}
+
+pub fn prompt_provider_id_for_add(
+    app_type: &AppType,
+    name: &str,
+    existing_ids: &[String],
+) -> Result<String, AppError> {
+    if !ProviderService::is_provider_key_app(app_type) {
+        let generated_id = generate_provider_id_for_app(app_type, name, existing_ids);
+        return Ok(generated_id);
+    }
+
+    let generated_id = generate_provider_id_for_app(app_type, name, existing_ids);
+    let label = if matches!(app_type, AppType::Hermes) {
+        texts::tui_label_hermes_provider_key()
+    } else {
+        texts::id_label()
+    };
+    let input = Text::new(label)
+        .with_initial_value(&generated_id)
+        .with_help_message(if crate::cli::i18n::is_chinese() {
+            "留空则使用根据名称生成的 ID"
+        } else {
+            "Leave empty to use the generated ID from the provider name"
+        })
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+
+    let id = if input.trim().is_empty() {
+        generated_id
+    } else {
+        input.trim().to_string()
+    };
+
+    validate_provider_id_for_add(app_type, &id, existing_ids)?;
+    Ok(id)
+}
+
+pub fn validate_provider_id_for_add(
+    app_type: &AppType,
+    id: &str,
+    existing_ids: &[String],
+) -> Result<(), AppError> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::InvalidInput(
+            texts::provider_id_empty_error().to_string(),
+        ));
+    }
+    ProviderService::validate_provider_key_for_add(app_type, trimmed)?;
+    if existing_ids.iter().any(|existing| existing == trimmed) {
+        return Err(AppError::localized(
+            "provider.id.exists",
+            format!("供应商 ID 已存在: {trimmed}"),
+            format!("Provider ID already exists: {trimmed}"),
+        ));
+    }
+    Ok(())
 }
 
 /// 收集基本字段：name, website_url

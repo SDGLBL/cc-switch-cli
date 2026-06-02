@@ -47,6 +47,14 @@ fn active_failover_last_provider_error() -> AppError {
     )
 }
 
+fn provider_key_invalid_error() -> AppError {
+    AppError::localized(
+        "provider.key.invalid",
+        "供应商标识只能包含小写字母、数字和连字符，且不能以连字符开头或结尾",
+        "Provider key can only contain lowercase letters, numbers, and hyphens, and cannot start or end with a hyphen",
+    )
+}
+
 fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -98,6 +106,87 @@ struct PostCommitAction {
 }
 
 impl ProviderService {
+    pub fn is_provider_key_app(app_type: &AppType) -> bool {
+        matches!(app_type, AppType::OpenClaw | AppType::Hermes)
+    }
+
+    pub fn is_valid_provider_key(value: &str) -> bool {
+        let mut previous_dash = false;
+        let mut saw_char = false;
+        for ch in value.chars() {
+            let valid = ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-';
+            if !valid {
+                return false;
+            }
+            if ch == '-' {
+                if !saw_char || previous_dash {
+                    return false;
+                }
+                previous_dash = true;
+            } else {
+                saw_char = true;
+                previous_dash = false;
+            }
+        }
+        saw_char && !previous_dash
+    }
+
+    pub fn sanitize_provider_key_text(value: &str) -> String {
+        value
+            .chars()
+            .filter_map(|ch| {
+                let ch = ch.to_ascii_lowercase();
+                (ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-').then_some(ch)
+            })
+            .collect()
+    }
+
+    pub fn generate_provider_key(name: &str, existing_ids: &[String]) -> String {
+        let mut base_id = name
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+
+        while base_id.contains("--") {
+            base_id = base_id.replace("--", "-");
+        }
+        base_id = base_id.trim_matches('-').to_string();
+        if base_id.is_empty() {
+            base_id = "provider".to_string();
+        }
+
+        if !existing_ids.iter().any(|existing| existing == &base_id) {
+            return base_id;
+        }
+
+        let mut counter = 1;
+        loop {
+            let candidate = format!("{base_id}-{counter}");
+            if !existing_ids.iter().any(|existing| existing == &candidate) {
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
+    pub fn validate_provider_key_for_add(
+        app_type: &AppType,
+        provider_id: &str,
+    ) -> Result<(), AppError> {
+        if Self::is_provider_key_app(app_type) && !Self::is_valid_provider_key(provider_id) {
+            return Err(provider_key_invalid_error());
+        }
+        Ok(())
+    }
+
     fn provider_copy_id(original_id: &str, existing_ids: &HashSet<String>) -> String {
         let base_id = format!("{}-copy", original_id.trim());
 
@@ -1633,6 +1722,7 @@ impl ProviderService {
             if app_type_clone.is_additive_mode() {
                 Self::set_provider_live_config_managed(&mut provider_to_store, true);
             }
+            Self::validate_provider_key_for_add(&app_type_clone, &provider_to_store.id)?;
 
             config.ensure_app(&app_type_clone);
             let manager = config
@@ -1644,6 +1734,13 @@ impl ProviderService {
             }
 
             let was_empty = manager.providers.is_empty();
+            if manager.providers.contains_key(&provider_to_store.id) {
+                return Err(AppError::localized(
+                    "provider.id.exists",
+                    format!("供应商 ID 已存在: {}", provider_to_store.id),
+                    format!("Provider ID already exists: {}", provider_to_store.id),
+                ));
+            }
             manager
                 .providers
                 .insert(provider_to_store.id.clone(), provider_to_store.clone());

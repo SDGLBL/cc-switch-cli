@@ -2648,6 +2648,15 @@ fn provider_add_form_openclaw_exposes_minimal_dedicated_fields() {
 }
 
 #[test]
+fn provider_add_form_openclaw_generates_upstream_provider_key() {
+    let mut form = ProviderAddFormState::new(AppType::OpenClaw);
+    form.name.set("OpenClaw Provider");
+
+    assert!(form.ensure_generated_id(&[]));
+    assert_eq!(form.id.value, "openclaw-provider");
+}
+
+#[test]
 fn provider_edit_form_openclaw_keeps_provider_key_visible_but_locked() {
     let provider = Provider::with_id(
         "openclaw-provider".to_string(),
