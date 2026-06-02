@@ -1,5 +1,5 @@
 use clap::Subcommand;
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use super::{provider_inspect, provider_usage_query};
 use crate::app_config::AppType;
@@ -251,6 +251,9 @@ pub enum ProviderCommand {
     Duplicate {
         /// Provider ID to duplicate
         id: String,
+        /// Edit copied provider fields before saving
+        #[arg(long)]
+        edit: bool,
     },
     /// Import providers from the current live app config
     ImportLive,
@@ -314,7 +317,7 @@ pub fn execute(cmd: ProviderCommand, app: Option<AppType>) -> Result<(), AppErro
         ProviderCommand::Add { template } => add_provider(app_type, template),
         ProviderCommand::Edit { id } => edit_provider(app_type, &id),
         ProviderCommand::Delete { id } => delete_provider(app_type, &id),
-        ProviderCommand::Duplicate { id } => duplicate_provider(app_type, &id),
+        ProviderCommand::Duplicate { id, edit } => duplicate_provider(app_type, &id, edit),
         ProviderCommand::ImportLive => import_live_config(app_type),
         ProviderCommand::RemoveFromConfig { id } => remove_from_config(app_type, &id),
         ProviderCommand::SetDefault { id, model } => {
@@ -858,12 +861,190 @@ mod tests {
             .get("openrouter_compat_mode")
             .is_none());
     }
+
+    #[test]
+    fn duplicate_draft_matches_tui_copy_identity_defaults() {
+        let mut provider = claude_provider(json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "sk-demo"
+            }
+        }));
+        provider.created_at = Some(123);
+        provider.in_failover_queue = true;
+        provider.sort_index = Some(7);
+
+        let draft = provider_duplicate_draft(
+            &provider,
+            &["provider-1".to_string(), "provider-1-copy".to_string()],
+        );
+
+        assert_eq!(draft.id, "provider-1-copy-2");
+        assert_eq!(draft.name, "Provider One copy");
+        assert_eq!(draft.created_at, None);
+        assert!(!draft.in_failover_queue);
+        assert_eq!(draft.sort_index, Some(7));
+        assert_eq!(
+            draft.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "sk-demo"
+        );
+    }
 }
 
-fn duplicate_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
+fn provider_copy_id(original_id: &str, existing_ids: &[String]) -> String {
+    let base_id = format!("{}-copy", original_id.trim());
+    if !existing_ids.iter().any(|id| id == &base_id) {
+        return base_id;
+    }
+
+    let mut counter = 2;
+    loop {
+        let candidate = format!("{base_id}-{counter}");
+        if !existing_ids.iter().any(|id| id == &candidate) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn existing_provider_ids_for_duplicate(
+    app_type: &AppType,
+    manager_ids: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>, AppError> {
+    let mut ids = manager_ids.into_iter().collect::<HashSet<_>>();
+    if app_type.is_additive_mode() {
+        let live_ids = match app_type {
+            AppType::OpenCode => crate::opencode_config::get_providers()?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            AppType::Hermes => crate::hermes_config::get_providers()?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            AppType::OpenClaw => crate::openclaw_config::get_providers()?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        ids.extend(live_ids);
+    }
+    Ok(ids.into_iter().collect())
+}
+
+fn provider_duplicate_draft(source: &Provider, existing_ids: &[String]) -> Provider {
+    let mut draft = source.clone();
+    draft.id = provider_copy_id(&source.id, existing_ids);
+    draft.name = format!("{} copy", source.name.trim());
+    draft.created_at = None;
+    draft.in_failover_queue = false;
+    draft
+}
+
+fn duplicate_provider(app_type: AppType, id: &str, edit: bool) -> Result<(), AppError> {
+    if edit {
+        return duplicate_provider_interactive(app_type, id);
+    }
+
     let state = AppState::try_new()?;
     let duplicate = ProviderService::duplicate(&state, app_type, id, None)?;
 
+    println!(
+        "{}",
+        success(&texts::provider_duplicated_success(id, &duplicate.id))
+    );
+    Ok(())
+}
+
+fn duplicate_provider_interactive(app_type: AppType, id: &str) -> Result<(), AppError> {
+    crate::cli::terminal::disable_bracketed_paste_mode_best_effort();
+
+    println!("{}", highlight(&format!("Duplicate Provider: {}", id)));
+    println!("{}", "=".repeat(50));
+
+    let state = AppState::try_new()?;
+    let config = state.config.read().unwrap();
+    let manager = config
+        .get_manager(&app_type)
+        .ok_or_else(|| AppError::Message(texts::app_config_not_found(app_type.as_str())))?;
+    let source = manager
+        .providers
+        .get(id)
+        .ok_or_else(|| {
+            let msg = texts::entity_not_found(texts::entity_provider(), id);
+            AppError::localized("provider.not_found", msg.clone(), msg)
+        })?
+        .clone();
+    let existing_ids =
+        existing_provider_ids_for_duplicate(&app_type, manager.providers.keys().cloned())?;
+    let common_snippet = config.common_config_snippets.get(&app_type).cloned();
+    drop(config);
+
+    let draft = provider_duplicate_draft(&source, &existing_ids);
+
+    println!("\n{}", highlight(texts::current_config_header()));
+    display_provider_summary(&draft, &app_type);
+    println!();
+    println!("{}", info(texts::edit_fields_instruction()));
+
+    let (name, website_url) = prompt_basic_fields(Some(&draft))?;
+    let settings_config = if Confirm::new(texts::modify_provider_config_prompt())
+        .with_default(false)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+    {
+        prompt_settings_config(
+            &app_type,
+            Some(&draft.settings_config),
+            matches!(app_type, AppType::Codex) && is_codex_official_provider(&source),
+        )?
+    } else {
+        draft.settings_config.clone()
+    };
+
+    let optional = if Confirm::new(texts::modify_optional_fields_prompt())
+        .with_default(false)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+    {
+        prompt_optional_fields(Some(&draft))?
+    } else {
+        OptionalFields::from_provider(&draft)
+    };
+
+    let mut copied = Provider {
+        id: draft.id.clone(),
+        name: name.trim().to_string(),
+        settings_config,
+        website_url,
+        category: source.category.clone(),
+        created_at: None,
+        sort_index: optional.sort_index,
+        notes: optional.notes,
+        icon: source.icon.clone(),
+        icon_color: source.icon_color.clone(),
+        meta: source.meta.clone(),
+        in_failover_queue: false,
+    };
+    prompt_and_apply_claude_api_format(&app_type, &mut copied)?;
+    if let Some(enabled) =
+        prompt_common_config_enabled(&app_type, common_snippet.as_deref(), Some(&copied))?
+    {
+        set_provider_common_config_meta(&mut copied, enabled);
+    }
+
+    println!("\n{}", highlight(texts::updated_config_header()));
+    display_provider_summary(&copied, &app_type);
+    if !Confirm::new(&texts::confirm_create_entity(texts::entity_provider()))
+        .with_default(false)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+    {
+        println!("{}", info(texts::cancelled()));
+        return Ok(());
+    }
+
+    let duplicate = ProviderService::duplicate(&state, app_type, id, Some(copied))?;
     println!(
         "{}",
         success(&texts::provider_duplicated_success(id, &duplicate.id))

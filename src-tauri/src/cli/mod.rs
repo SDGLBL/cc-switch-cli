@@ -748,6 +748,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_provider_duplicate_edit_option() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "duplicate", "demo", "--edit"]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::Duplicate {
+                id,
+                edit,
+            })) => {
+                assert_eq!(id, "demo");
+                assert!(edit);
+            }
+            _ => panic!("expected provider duplicate command with edit option"),
+        }
+    }
+
+    #[test]
+    fn parses_provider_duplicate_without_edit_option() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "duplicate", "demo"]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::Duplicate {
+                id,
+                edit,
+            })) => {
+                assert_eq!(id, "demo");
+                assert!(!edit);
+            }
+            _ => panic!("expected provider duplicate command without edit option"),
+        }
+    }
+
+    #[test]
     fn parses_provider_fetch_models_subcommand() {
         let cli = Cli::parse_from(["cc-switch", "provider", "fetch-models", "demo"]);
 
