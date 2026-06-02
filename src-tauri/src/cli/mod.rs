@@ -731,6 +731,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_provider_add_template_option() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "add", "--template", "codex-oauth"]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::Add {
+                template,
+            })) => {
+                assert_eq!(
+                    template,
+                    Some(super::commands::provider_input::ProviderAddTemplate::CodexOauth)
+                );
+            }
+            _ => panic!("expected provider add command with template"),
+        }
+    }
+
+    #[test]
     fn parses_provider_fetch_models_subcommand() {
         let cli = Cli::parse_from(["cc-switch", "provider", "fetch-models", "demo"]);
 

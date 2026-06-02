@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use super::{provider_inspect, provider_usage_query};
 use crate::app_config::AppType;
 use crate::cli::commands::provider_input::{
-    common_snippet_has_effective_config, current_timestamp, display_provider_summary,
-    generate_provider_id, prompt_basic_fields, prompt_optional_fields, prompt_settings_config,
-    prompt_settings_config_for_add, provider_uses_common_config, set_provider_common_config_meta,
-    supports_common_config, OptionalFields, ProviderAddMode,
+    build_provider_from_add_template, common_snippet_has_effective_config, current_timestamp,
+    display_provider_summary, generate_provider_id, prompt_basic_fields, prompt_optional_fields,
+    prompt_settings_config, prompt_settings_config_for_add, provider_add_template_choices,
+    provider_uses_common_config, set_provider_common_config_meta, supports_common_config,
+    validate_provider_add_template, OptionalFields, ProviderAddTemplate,
 };
 use crate::cli::i18n::texts;
 use crate::cli::ui::{highlight, info, success, warning};
@@ -15,7 +16,7 @@ use crate::error::AppError;
 use crate::provider::{Provider, ProviderMeta};
 use crate::services::ProviderService;
 use crate::store::AppState;
-use inquire::{Confirm, Select, Text};
+use inquire::{Confirm, Select};
 
 const CLAUDE_API_FORMAT_ANTHROPIC: &str = "anthropic";
 const CLAUDE_API_FORMAT_OPENAI_CHAT: &str = "openai_chat";
@@ -27,10 +28,6 @@ const CLAUDE_API_FORMAT_CHOICES: [&str; 4] = [
     CLAUDE_API_FORMAT_OPENAI_RESPONSES,
     CLAUDE_API_FORMAT_GEMINI_NATIVE,
 ];
-
-fn supports_official_provider(app_type: &AppType) -> bool {
-    matches!(app_type, AppType::Codex)
-}
 
 fn is_codex_official_provider(provider: &Provider) -> bool {
     provider
@@ -234,8 +231,12 @@ pub enum ProviderCommand {
         /// Provider ID to switch to
         id: String,
     },
-    /// Add a new provider (interactive)
-    Add,
+    /// Add a new provider
+    Add {
+        /// Provider template to apply before creation
+        #[arg(long, value_enum)]
+        template: Option<ProviderAddTemplate>,
+    },
     /// Edit a provider
     Edit {
         /// Provider ID to edit
@@ -310,7 +311,7 @@ pub fn execute(cmd: ProviderCommand, app: Option<AppType>) -> Result<(), AppErro
         ProviderCommand::List => provider_inspect::list_providers(app_type),
         ProviderCommand::Current => provider_inspect::show_current(app_type),
         ProviderCommand::Switch { id } => switch_provider(app_type, &id),
-        ProviderCommand::Add => add_provider(app_type),
+        ProviderCommand::Add { template } => add_provider(app_type, template),
         ProviderCommand::Edit { id } => edit_provider(app_type, &id),
         ProviderCommand::Delete { id } => delete_provider(app_type, &id),
         ProviderCommand::Duplicate { id } => duplicate_provider(app_type, &id),
@@ -414,33 +415,42 @@ fn delete_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn add_provider(app_type: AppType) -> Result<(), AppError> {
+fn prompt_provider_add_template(
+    app_type: &AppType,
+) -> Result<Option<ProviderAddTemplate>, AppError> {
+    let choices = provider_add_template_choices(app_type);
+    if choices.is_empty() {
+        return Ok(Some(ProviderAddTemplate::Custom));
+    }
+
+    let labels = choices
+        .iter()
+        .map(|choice| choice.label.to_string())
+        .collect::<Vec<_>>();
+    match Select::new(texts::select_provider_add_mode(), labels.clone()).prompt() {
+        Ok(selected) => {
+            let template = choices
+                .iter()
+                .find(|choice| choice.label == selected)
+                .map(|choice| choice.template)
+                .unwrap_or(ProviderAddTemplate::Custom);
+            Ok(Some(template))
+        }
+        Err(inquire::error::InquireError::OperationCanceled)
+        | Err(inquire::error::InquireError::OperationInterrupted) => {
+            println!("{}", info(texts::cancelled()));
+            Ok(None)
+        }
+        Err(e) => Err(AppError::Message(texts::input_failed_error(&e.to_string()))),
+    }
+}
+
+fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Result<(), AppError> {
     // Disable bracketed paste mode to work around inquire dropping paste events
     crate::cli::terminal::disable_bracketed_paste_mode_best_effort();
 
     println!("{}", highlight("Add New Provider"));
     println!("{}", "=".repeat(50));
-
-    let add_mode = if supports_official_provider(&app_type) {
-        let choices = vec![
-            texts::add_official_provider(),
-            texts::add_third_party_provider(),
-        ];
-        match Select::new(texts::select_provider_add_mode(), choices.clone()).prompt() {
-            Ok(selected) if selected == texts::add_official_provider() => ProviderAddMode::Official,
-            Ok(_selected) => ProviderAddMode::ThirdParty,
-            Err(inquire::error::InquireError::OperationCanceled)
-            | Err(inquire::error::InquireError::OperationInterrupted) => {
-                println!("{}", info(texts::cancelled()));
-                return Ok(());
-            }
-            Err(e) => {
-                return Err(AppError::Message(texts::input_failed_error(&e.to_string())));
-            }
-        }
-    } else {
-        ProviderAddMode::ThirdParty
-    };
 
     // 1. 加载配置和状态
     let state = AppState::try_new()?;
@@ -452,33 +462,50 @@ fn add_provider(app_type: AppType) -> Result<(), AppError> {
     let common_snippet = config.common_config_snippets.get(&app_type).cloned();
     drop(config);
 
-    // 2. 收集基本字段
-    let is_codex_official = matches!(
-        (app_type.clone(), add_mode),
-        (AppType::Codex, ProviderAddMode::Official)
-    );
-    let (name, website_url) = match (app_type.clone(), add_mode) {
-        (AppType::Codex, ProviderAddMode::Official) => {
-            let name = Text::new(texts::provider_name_label())
-                .with_placeholder("OpenAI")
-                .with_help_message(texts::provider_name_help())
-                .prompt()
-                .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
-            let name = name.trim().to_string();
-            if name.is_empty() {
-                return Err(AppError::InvalidInput(
-                    texts::provider_name_empty_error().to_string(),
-                ));
-            }
-            (name, Some("https://chatgpt.com/codex".to_string()))
+    let template = match template {
+        Some(template) => {
+            validate_provider_add_template(&app_type, template)?;
+            template
         }
-        _ => prompt_basic_fields(None)?,
+        None => match prompt_provider_add_template(&app_type)? {
+            Some(template) => template,
+            None => return Ok(()),
+        },
     };
-    let id = generate_provider_id(&name, &existing_ids);
-    println!("{}", info(&texts::generated_id_message(&id)));
 
-    // 3. 收集配置
-    let settings_config = prompt_settings_config_for_add(&app_type, add_mode)?;
+    // 2. 收集基本字段
+    let mut provider = if template.is_custom() {
+        let (name, website_url) = prompt_basic_fields(None)?;
+        let id = generate_provider_id(&name, &existing_ids);
+        println!("{}", info(&texts::generated_id_message(&id)));
+
+        let settings_config = prompt_settings_config_for_add(&app_type)?;
+        Provider {
+            id,
+            name,
+            settings_config,
+            website_url,
+            category: None,
+            created_at: Some(current_timestamp()),
+            sort_index: None,
+            notes: None,
+            icon: None,
+            icon_color: None,
+            meta: None,
+            in_failover_queue: false,
+        }
+    } else {
+        let mut provider = build_provider_from_add_template(&app_type, template, &existing_ids)?;
+        if template.requires_settings_prompt() {
+            provider.settings_config = prompt_settings_config(
+                &app_type,
+                Some(&provider.settings_config),
+                is_codex_official_provider(&provider),
+            )?;
+        }
+        println!("{}", info(&texts::generated_id_message(&provider.id)));
+        provider
+    };
 
     // 4. 询问是否配置可选字段
     let optional = if Confirm::new(texts::configure_optional_fields_prompt())
@@ -491,28 +518,9 @@ fn add_provider(app_type: AppType) -> Result<(), AppError> {
         OptionalFields::default()
     };
 
-    // 5. 构建 Provider 对象
-    let mut provider = Provider {
-        id: id.clone(),
-        name,
-        settings_config,
-        website_url,
-        category: None,
-        created_at: Some(current_timestamp()),
-        sort_index: optional.sort_index,
-        notes: optional.notes,
-        icon: None,
-        icon_color: None,
-        meta: if is_codex_official {
-            Some(ProviderMeta {
-                codex_official: Some(true),
-                ..Default::default()
-            })
-        } else {
-            None
-        },
-        in_failover_queue: false,
-    };
+    // 5. 应用可选字段与共享元数据
+    provider.sort_index = optional.sort_index;
+    provider.notes = optional.notes;
     prompt_and_apply_claude_api_format(&app_type, &mut provider)?;
     if let Some(enabled) = prompt_common_config_enabled(&app_type, common_snippet.as_deref(), None)?
     {
@@ -531,12 +539,16 @@ fn add_provider(app_type: AppType) -> Result<(), AppError> {
     }
 
     // 7. 调用 Service 层
+    let provider_id = provider.id.clone();
     ProviderService::add(&state, app_type.clone(), provider)?;
 
     // 8. 成功消息
     println!(
         "\n{}",
-        success(&texts::entity_added_success(texts::entity_provider(), &id))
+        success(&texts::entity_added_success(
+            texts::entity_provider(),
+            &provider_id
+        ))
     );
 
     Ok(())

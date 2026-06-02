@@ -5,17 +5,59 @@ use crate::app_config::AppType;
 use crate::cli::i18n::texts;
 use crate::cli::ui::info;
 use crate::error::AppError;
-use crate::provider::{Provider, ProviderMeta};
+use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
 use crate::services::ProviderService;
+use clap::ValueEnum;
 use colored::Colorize;
 use inquire::{Confirm, Select, Text};
 use serde_json::{json, Map, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ProviderAddTemplate {
+    Custom,
+    ClaudeOfficial,
+    CodexOauth,
+    OpenaiOfficial,
+    GoogleOauth,
+    Packycode,
+    Aicodemirror,
+    Cubence,
+    Dds,
+}
+
+impl ProviderAddTemplate {
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::ClaudeOfficial => "claude-official",
+            Self::CodexOauth => "codex-oauth",
+            Self::OpenaiOfficial => "openai-official",
+            Self::GoogleOauth => "google-oauth",
+            Self::Packycode => "packycode",
+            Self::Aicodemirror => "aicodemirror",
+            Self::Cubence => "cubence",
+            Self::Dds => "dds",
+        }
+    }
+
+    pub fn is_custom(self) -> bool {
+        matches!(self, Self::Custom)
+    }
+
+    pub fn requires_settings_prompt(self) -> bool {
+        matches!(
+            self,
+            Self::Packycode | Self::Aicodemirror | Self::Cubence | Self::Dds
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderAddMode {
-    Official,
-    ThirdParty,
+pub struct ProviderAddTemplateChoice {
+    pub template: ProviderAddTemplate,
+    pub label: &'static str,
 }
 
 pub fn supports_common_config(app_type: &AppType) -> bool {
@@ -71,6 +113,532 @@ pub fn set_provider_common_config_meta(provider: &mut Provider, enabled: bool) {
         .meta
         .get_or_insert_with(ProviderMeta::default)
         .apply_common_config = Some(enabled);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SponsorProviderPreset {
+    id: ProviderAddTemplate,
+    provider_name: &'static str,
+    chip_label: &'static str,
+    website_url: &'static str,
+    partner_promotion_key: &'static str,
+    claude_base_url: &'static str,
+    codex_base_url: &'static str,
+    gemini_base_url: &'static str,
+    opencode_base_url: &'static str,
+    openclaw_base_url: &'static str,
+    hermes_base_url: &'static str,
+}
+
+const SPONSOR_PROVIDER_PRESETS: [SponsorProviderPreset; 4] = [
+    SponsorProviderPreset {
+        id: ProviderAddTemplate::Packycode,
+        provider_name: "PackyCode",
+        chip_label: "* PackyCode",
+        website_url: "https://www.packyapi.com",
+        partner_promotion_key: "packycode",
+        claude_base_url: "https://www.packyapi.com",
+        codex_base_url: "https://www.packyapi.com/v1",
+        gemini_base_url: "https://www.packyapi.com",
+        opencode_base_url: "https://www.packyapi.com/v1",
+        openclaw_base_url: "https://www.packyapi.com",
+        hermes_base_url: "https://www.packyapi.com",
+    },
+    SponsorProviderPreset {
+        id: ProviderAddTemplate::Aicodemirror,
+        provider_name: "AICodeMirror",
+        chip_label: "* AICodeMirror",
+        website_url: "https://www.aicodemirror.com",
+        partner_promotion_key: "aicodemirror",
+        claude_base_url: "https://api.aicodemirror.com/api/claudecode",
+        codex_base_url: "https://api.aicodemirror.com/api/codex/backend-api/codex",
+        gemini_base_url: "https://api.aicodemirror.com/api/gemini",
+        opencode_base_url: "https://api.aicodemirror.com/api/claudecode",
+        openclaw_base_url: "https://api.aicodemirror.com/api/claudecode",
+        hermes_base_url: "",
+    },
+    SponsorProviderPreset {
+        id: ProviderAddTemplate::Cubence,
+        provider_name: "Cubence",
+        chip_label: "* Cubence",
+        website_url: "https://cubence.com",
+        partner_promotion_key: "cubence",
+        claude_base_url: "https://api.cubence.com",
+        codex_base_url: "https://api.cubence.com/v1",
+        gemini_base_url: "https://api.cubence.com",
+        opencode_base_url: "https://api.cubence.com/v1",
+        openclaw_base_url: "https://api.cubence.com",
+        hermes_base_url: "https://api.cubence.com",
+    },
+    SponsorProviderPreset {
+        id: ProviderAddTemplate::Dds,
+        provider_name: "DDS",
+        chip_label: "* DDS",
+        website_url: "https://www.ddshub.cc",
+        partner_promotion_key: "dds",
+        claude_base_url: "https://www.ddshub.cc",
+        codex_base_url: "https://www.ddshub.cc",
+        gemini_base_url: "",
+        opencode_base_url: "",
+        openclaw_base_url: "",
+        hermes_base_url: "",
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_CLAUDE: [ProviderAddTemplateChoice; 7] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::ClaudeOfficial,
+        label: "Claude Official",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::CodexOauth,
+        label: "Codex",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Packycode,
+        label: SPONSOR_PROVIDER_PRESETS[0].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Aicodemirror,
+        label: SPONSOR_PROVIDER_PRESETS[1].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Dds,
+        label: SPONSOR_PROVIDER_PRESETS[3].chip_label,
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_CODEX: [ProviderAddTemplateChoice; 6] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::OpenaiOfficial,
+        label: "OpenAI Official",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Packycode,
+        label: SPONSOR_PROVIDER_PRESETS[0].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Aicodemirror,
+        label: SPONSOR_PROVIDER_PRESETS[1].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Dds,
+        label: SPONSOR_PROVIDER_PRESETS[3].chip_label,
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_GEMINI: [ProviderAddTemplateChoice; 5] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::GoogleOauth,
+        label: "Google OAuth",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Packycode,
+        label: SPONSOR_PROVIDER_PRESETS[0].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Aicodemirror,
+        label: SPONSOR_PROVIDER_PRESETS[1].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_OPENCODE: [ProviderAddTemplateChoice; 3] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Aicodemirror,
+        label: SPONSOR_PROVIDER_PRESETS[1].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_HERMES: [ProviderAddTemplateChoice; 2] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+];
+
+const PROVIDER_TEMPLATE_CHOICES_OPENCLAW: [ProviderAddTemplateChoice; 3] = [
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Custom,
+        label: "Custom",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Aicodemirror,
+        label: SPONSOR_PROVIDER_PRESETS[1].chip_label,
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Cubence,
+        label: SPONSOR_PROVIDER_PRESETS[2].chip_label,
+    },
+];
+
+pub fn provider_add_template_choices(app_type: &AppType) -> &'static [ProviderAddTemplateChoice] {
+    match app_type {
+        AppType::Claude => &PROVIDER_TEMPLATE_CHOICES_CLAUDE,
+        AppType::Codex => &PROVIDER_TEMPLATE_CHOICES_CODEX,
+        AppType::Gemini => &PROVIDER_TEMPLATE_CHOICES_GEMINI,
+        AppType::OpenCode => &PROVIDER_TEMPLATE_CHOICES_OPENCODE,
+        AppType::Hermes => &PROVIDER_TEMPLATE_CHOICES_HERMES,
+        AppType::OpenClaw => &PROVIDER_TEMPLATE_CHOICES_OPENCLAW,
+    }
+}
+
+pub fn provider_add_template_supported(app_type: &AppType, template: ProviderAddTemplate) -> bool {
+    provider_add_template_choices(app_type)
+        .iter()
+        .any(|choice| choice.template == template)
+}
+
+pub fn provider_add_template_supported_names(app_type: &AppType) -> String {
+    provider_add_template_choices(app_type)
+        .iter()
+        .map(|choice| choice.template.cli_name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn validate_provider_add_template(
+    app_type: &AppType,
+    template: ProviderAddTemplate,
+) -> Result<(), AppError> {
+    if provider_add_template_supported(app_type, template) {
+        return Ok(());
+    }
+
+    let supported = provider_add_template_supported_names(app_type);
+    if crate::cli::i18n::is_chinese() {
+        Err(AppError::InvalidInput(format!(
+            "供应商模板 '{}' 不支持应用 {}。可用模板：{}",
+            template.cli_name(),
+            app_type.as_str(),
+            supported
+        )))
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "Provider template '{}' is not supported for {}. Supported templates: {}",
+            template.cli_name(),
+            app_type.as_str(),
+            supported
+        )))
+    }
+}
+
+pub fn build_provider_from_add_template(
+    app_type: &AppType,
+    template: ProviderAddTemplate,
+    existing_ids: &[String],
+) -> Result<Provider, AppError> {
+    let mut provider = build_provider_template_seed(app_type, template, existing_ids)?;
+    provider.created_at = Some(current_timestamp());
+    Ok(provider)
+}
+
+pub fn build_provider_template_seed(
+    app_type: &AppType,
+    template: ProviderAddTemplate,
+    existing_ids: &[String],
+) -> Result<Provider, AppError> {
+    validate_provider_add_template(app_type, template)?;
+    if template.is_custom() {
+        return Err(AppError::InvalidInput(
+            "Custom provider templates require interactive field prompts".to_string(),
+        ));
+    }
+
+    let name = template_default_name(template)?;
+    let id = generate_provider_id(name, existing_ids);
+    let website_url = template_default_website_url(template).map(str::to_string);
+    let category = template_default_category(template).map(str::to_string);
+    let meta = template_default_meta(template);
+    let settings_config = build_provider_template_settings_config(app_type, template, &id)?;
+
+    Ok(Provider {
+        id,
+        name: name.to_string(),
+        settings_config,
+        website_url,
+        category,
+        created_at: None,
+        sort_index: None,
+        notes: None,
+        icon: None,
+        icon_color: None,
+        meta,
+        in_failover_queue: false,
+    })
+}
+
+fn template_default_name(template: ProviderAddTemplate) -> Result<&'static str, AppError> {
+    Ok(match template {
+        ProviderAddTemplate::ClaudeOfficial => "Claude Official",
+        ProviderAddTemplate::CodexOauth => "Codex",
+        ProviderAddTemplate::OpenaiOfficial => "OpenAI Official",
+        ProviderAddTemplate::GoogleOauth => "Google OAuth",
+        ProviderAddTemplate::Packycode
+        | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Cubence
+        | ProviderAddTemplate::Dds => sponsor_preset(template)
+            .map(|preset| preset.provider_name)
+            .ok_or_else(|| unsupported_template_error(template))?,
+        ProviderAddTemplate::Custom => return Err(unsupported_template_error(template)),
+    })
+}
+
+fn template_default_website_url(template: ProviderAddTemplate) -> Option<&'static str> {
+    match template {
+        ProviderAddTemplate::ClaudeOfficial => Some("https://www.anthropic.com/claude-code"),
+        ProviderAddTemplate::CodexOauth => Some("https://openai.com/chatgpt/pricing"),
+        ProviderAddTemplate::OpenaiOfficial => Some("https://chatgpt.com/codex"),
+        ProviderAddTemplate::GoogleOauth => Some("https://ai.google.dev"),
+        ProviderAddTemplate::Packycode
+        | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Cubence
+        | ProviderAddTemplate::Dds => sponsor_preset(template).map(|preset| preset.website_url),
+        ProviderAddTemplate::Custom => None,
+    }
+}
+
+fn template_default_category(template: ProviderAddTemplate) -> Option<&'static str> {
+    match template {
+        ProviderAddTemplate::ClaudeOfficial
+        | ProviderAddTemplate::OpenaiOfficial
+        | ProviderAddTemplate::GoogleOauth => Some("official"),
+        ProviderAddTemplate::Custom
+        | ProviderAddTemplate::CodexOauth
+        | ProviderAddTemplate::Packycode
+        | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Cubence
+        | ProviderAddTemplate::Dds => None,
+    }
+}
+
+fn template_default_meta(template: ProviderAddTemplate) -> Option<ProviderMeta> {
+    match template {
+        ProviderAddTemplate::CodexOauth => Some(ProviderMeta {
+            provider_type: Some("codex_oauth".to_string()),
+            api_format: Some("openai_responses".to_string()),
+            codex_fast_mode: Some(false),
+            auth_binding: Some(AuthBinding {
+                source: AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: None,
+            }),
+            ..Default::default()
+        }),
+        ProviderAddTemplate::OpenaiOfficial => Some(ProviderMeta {
+            codex_official: Some(true),
+            ..Default::default()
+        }),
+        ProviderAddTemplate::GoogleOauth => Some(ProviderMeta {
+            partner_promotion_key: Some("google-official".to_string()),
+            ..Default::default()
+        }),
+        ProviderAddTemplate::Packycode
+        | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Cubence
+        | ProviderAddTemplate::Dds => sponsor_preset(template).map(|preset| ProviderMeta {
+            is_partner: Some(true),
+            partner_promotion_key: Some(preset.partner_promotion_key.to_string()),
+            ..Default::default()
+        }),
+        ProviderAddTemplate::Custom | ProviderAddTemplate::ClaudeOfficial => None,
+    }
+}
+
+fn build_provider_template_settings_config(
+    app_type: &AppType,
+    template: ProviderAddTemplate,
+    provider_id: &str,
+) -> Result<Value, AppError> {
+    match template {
+        ProviderAddTemplate::ClaudeOfficial => Ok(json!({ "env": {} })),
+        ProviderAddTemplate::CodexOauth => Ok(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://chatgpt.com/backend-api/codex",
+                "ANTHROPIC_MODEL": "gpt-5.4",
+                "ANTHROPIC_REASONING_MODEL": "gpt-5.4",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.4-mini",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.4",
+            },
+            "attribution": {
+                "commit": "",
+                "pr": ""
+            }
+        })),
+        ProviderAddTemplate::OpenaiOfficial => build_codex_official_settings_config(None),
+        ProviderAddTemplate::GoogleOauth => Ok(json!({ "env": {} })),
+        ProviderAddTemplate::Packycode
+        | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Cubence
+        | ProviderAddTemplate::Dds => build_sponsor_template_settings_config(
+            app_type,
+            sponsor_preset(template).ok_or_else(|| unsupported_template_error(template))?,
+            provider_id,
+        ),
+        ProviderAddTemplate::Custom => Err(unsupported_template_error(template)),
+    }
+}
+
+fn build_sponsor_template_settings_config(
+    app_type: &AppType,
+    preset: SponsorProviderPreset,
+    provider_id: &str,
+) -> Result<Value, AppError> {
+    match app_type {
+        AppType::Claude => Ok(json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": preset.claude_base_url,
+            }
+        })),
+        AppType::Codex => Ok(build_codex_settings_config(
+            None,
+            preset.codex_base_url,
+            "gpt-5.4",
+            "responses",
+            provider_id,
+        )),
+        AppType::Gemini => Ok(json!({
+            "env": {
+                "GOOGLE_GEMINI_BASE_URL": preset.gemini_base_url,
+            }
+        })),
+        AppType::OpenCode => {
+            if preset.id == ProviderAddTemplate::Aicodemirror {
+                Ok(json!({
+                    "npm": "@ai-sdk/anthropic",
+                    "options": {
+                        "baseURL": preset.claude_base_url,
+                    },
+                    "models": {
+                        "claude-opus-4.6": {
+                            "name": "Claude Opus 4.6",
+                        },
+                        "claude-sonnet-4.6": {
+                            "name": "Claude Sonnet 4.6",
+                        },
+                    },
+                }))
+            } else {
+                build_opencode_settings_config(
+                    None,
+                    "@ai-sdk/openai-compatible",
+                    "",
+                    preset.opencode_base_url,
+                    "",
+                    "",
+                    "",
+                    "",
+                    None,
+                )
+            }
+        }
+        AppType::Hermes => build_hermes_settings_config(
+            None,
+            crate::hermes_config::HERMES_DEFAULT_API_MODE,
+            preset.hermes_base_url,
+            "",
+            json!([]),
+            "",
+        ),
+        AppType::OpenClaw => {
+            if preset.id == ProviderAddTemplate::Aicodemirror {
+                build_openclaw_settings_config(
+                    None,
+                    "anthropic-messages",
+                    "",
+                    preset.claude_base_url,
+                    false,
+                    json!([
+                        {
+                            "id": "claude-opus-4-6",
+                            "name": "Claude Opus 4.6",
+                            "contextWindow": 200000,
+                            "cost": {
+                                "input": 5,
+                                "output": 25,
+                            },
+                        },
+                        {
+                            "id": "claude-sonnet-4-6",
+                            "name": "Claude Sonnet 4.6",
+                            "contextWindow": 200000,
+                            "cost": {
+                                "input": 3,
+                                "output": 15,
+                            },
+                        },
+                    ]),
+                )
+            } else {
+                build_openclaw_settings_config(
+                    None,
+                    crate::openclaw_config::OPENCLAW_DEFAULT_API_PROTOCOL,
+                    "",
+                    preset.openclaw_base_url,
+                    false,
+                    json!([{
+                        "id": "placeholder-model"
+                    }]),
+                )
+                .map(|mut value| {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.remove("models");
+                    }
+                    value
+                })
+            }
+        }
+    }
+}
+
+fn sponsor_preset(template: ProviderAddTemplate) -> Option<SponsorProviderPreset> {
+    SPONSOR_PROVIDER_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| preset.id == template)
+}
+
+fn unsupported_template_error(template: ProviderAddTemplate) -> AppError {
+    AppError::InvalidInput(format!(
+        "Unsupported provider template '{}'",
+        template.cli_name()
+    ))
 }
 
 #[cfg(test)]
@@ -131,6 +699,64 @@ mod tests {
     }
 
     #[test]
+    fn cli_codex_prompt_update_preserves_template_model_provider_key() {
+        let seed =
+            build_provider_template_seed(&AppType::Codex, ProviderAddTemplate::Aicodemirror, &[])
+                .expect("build AICodeMirror Codex seed");
+
+        let cfg = build_codex_settings_config_from_prompt(
+            Some(&seed.settings_config),
+            "sk-updated",
+            "https://codex.example/v1/",
+            "gpt-6",
+            "custom",
+        );
+
+        let config = cfg
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("config should be present");
+        assert!(config.contains("model_provider = \"aicodemirror\""));
+        assert!(config.contains("[model_providers.aicodemirror]"));
+        assert!(!config.contains("model_provider = \"custom\""));
+        assert!(!config.contains("[model_providers.custom]"));
+        assert!(config.contains("model = \"gpt-6\""));
+        assert!(config.contains("base_url = \"https://codex.example/v1\""));
+        assert_eq!(cfg["auth"]["OPENAI_API_KEY"], "sk-updated");
+    }
+
+    #[test]
+    fn cli_gemini_api_key_settings_match_tui_env_shape() {
+        let cfg = build_gemini_api_key_settings_config(
+            "AIza-updated",
+            "https://generativelanguage.googleapis.com",
+            "gemini-3-pro-preview",
+        );
+
+        assert_eq!(cfg["env"]["GEMINI_API_KEY"], "AIza-updated");
+        assert_eq!(
+            cfg["env"]["GOOGLE_GEMINI_BASE_URL"],
+            "https://generativelanguage.googleapis.com"
+        );
+        assert_eq!(cfg["env"]["GEMINI_MODEL"], "gemini-3-pro-preview");
+        assert!(
+            cfg.get("config").is_none(),
+            "Gemini API-key settings should match TUI by omitting config"
+        );
+    }
+
+    #[test]
+    fn cli_gemini_oauth_settings_match_tui_empty_env_shape() {
+        let cfg = build_gemini_oauth_settings_config();
+
+        assert_eq!(cfg, json!({ "env": {} }));
+        assert!(
+            cfg.get("config").is_none(),
+            "Gemini OAuth settings should not carry config or model fields"
+        );
+    }
+
+    #[test]
     fn common_config_helpers_detect_and_mark_supported_provider() {
         assert!(common_snippet_has_effective_config(
             &AppType::Claude,
@@ -155,6 +781,261 @@ mod tests {
         assert_eq!(
             provider.meta.and_then(|meta| meta.apply_common_config),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn cli_provider_template_labels_follow_tui_support_matrix() {
+        let labels = |app_type: AppType| {
+            provider_add_template_choices(&app_type)
+                .iter()
+                .map(|choice| choice.label)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(AppType::Claude),
+            vec![
+                "Custom",
+                "Claude Official",
+                "Codex",
+                "* PackyCode",
+                "* AICodeMirror",
+                "* Cubence",
+                "* DDS",
+            ]
+        );
+        assert_eq!(
+            labels(AppType::Codex),
+            vec![
+                "Custom",
+                "OpenAI Official",
+                "* PackyCode",
+                "* AICodeMirror",
+                "* Cubence",
+                "* DDS",
+            ]
+        );
+        assert_eq!(
+            labels(AppType::Gemini),
+            vec![
+                "Custom",
+                "Google OAuth",
+                "* PackyCode",
+                "* AICodeMirror",
+                "* Cubence",
+            ]
+        );
+        assert_eq!(
+            labels(AppType::OpenCode),
+            vec!["Custom", "* AICodeMirror", "* Cubence"]
+        );
+        assert_eq!(labels(AppType::Hermes), vec!["Custom", "* Cubence"]);
+        assert_eq!(
+            labels(AppType::OpenClaw),
+            vec!["Custom", "* AICodeMirror", "* Cubence"]
+        );
+    }
+
+    #[test]
+    fn cli_provider_template_rejects_unsupported_app_template_pairs() {
+        assert!(
+            validate_provider_add_template(&AppType::Gemini, ProviderAddTemplate::Dds).is_err()
+        );
+        assert!(
+            validate_provider_add_template(&AppType::OpenCode, ProviderAddTemplate::Packycode)
+                .is_err()
+        );
+        assert!(
+            validate_provider_add_template(&AppType::Claude, ProviderAddTemplate::GoogleOauth)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cli_claude_codex_oauth_template_matches_tui_contract() {
+        let provider =
+            build_provider_template_seed(&AppType::Claude, ProviderAddTemplate::CodexOauth, &[])
+                .expect("build Codex OAuth provider");
+
+        assert_eq!(provider.id, "codex");
+        assert_eq!(provider.name, "Codex");
+        assert_eq!(
+            provider.website_url.as_deref(),
+            Some("https://openai.com/chatgpt/pricing")
+        );
+        assert_eq!(
+            provider.settings_config["env"]["ANTHROPIC_BASE_URL"],
+            "https://chatgpt.com/backend-api/codex"
+        );
+        assert_eq!(
+            provider.settings_config["env"]["ANTHROPIC_MODEL"],
+            "gpt-5.4"
+        );
+        assert_eq!(
+            provider.settings_config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            "gpt-5.4-mini"
+        );
+        assert!(
+            provider.settings_config["env"]
+                .get("ANTHROPIC_AUTH_TOKEN")
+                .is_none(),
+            "Codex OAuth providers must not persist provider API keys"
+        );
+        assert_eq!(provider.settings_config["attribution"]["commit"], "");
+        assert_eq!(provider.settings_config["attribution"]["pr"], "");
+
+        let meta = provider
+            .meta
+            .expect("Codex OAuth metadata should be present");
+        assert_eq!(meta.provider_type.as_deref(), Some("codex_oauth"));
+        assert_eq!(meta.api_format.as_deref(), Some("openai_responses"));
+        assert_eq!(meta.codex_fast_mode, Some(false));
+        let binding = meta
+            .auth_binding
+            .expect("Codex OAuth should bind to managed account auth");
+        assert_eq!(binding.source, AuthBindingSource::ManagedAccount);
+        assert_eq!(binding.auth_provider.as_deref(), Some("codex_oauth"));
+        assert!(
+            binding.account_id.is_none(),
+            "default-account binding should omit accountId"
+        );
+    }
+
+    #[test]
+    fn cli_claude_sponsor_prompt_blank_api_key_omits_token() {
+        let seed =
+            build_provider_template_seed(&AppType::Claude, ProviderAddTemplate::Packycode, &[])
+                .expect("build PackyCode Claude seed");
+        let base_url = seed.settings_config["env"]["ANTHROPIC_BASE_URL"]
+            .as_str()
+            .expect("seed base URL should exist");
+
+        let cfg = build_claude_settings_config_from_prompt(
+            "",
+            base_url,
+            Vec::<(&str, Option<String>)>::new(),
+        );
+
+        assert_eq!(cfg["env"]["ANTHROPIC_BASE_URL"], "https://www.packyapi.com");
+        assert!(
+            cfg["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "Claude sponsor prompt should match TUI by omitting blank API keys"
+        );
+    }
+
+    #[test]
+    fn cli_official_templates_match_tui_metadata_and_settings_shape() {
+        let claude = build_provider_template_seed(
+            &AppType::Claude,
+            ProviderAddTemplate::ClaudeOfficial,
+            &[],
+        )
+        .expect("build Claude Official provider");
+        assert_eq!(claude.name, "Claude Official");
+        assert_eq!(claude.category.as_deref(), Some("official"));
+        assert_eq!(
+            claude.website_url.as_deref(),
+            Some("https://www.anthropic.com/claude-code")
+        );
+        assert_eq!(claude.settings_config, json!({ "env": {} }));
+        assert!(claude.meta.is_none());
+
+        let codex =
+            build_provider_template_seed(&AppType::Codex, ProviderAddTemplate::OpenaiOfficial, &[])
+                .expect("build OpenAI Official provider");
+        assert_eq!(codex.name, "OpenAI Official");
+        assert_eq!(codex.category.as_deref(), Some("official"));
+        assert_eq!(codex.settings_config.get("auth"), Some(&json!({})));
+        assert_eq!(codex.settings_config.get("config"), Some(&json!("")));
+        assert_eq!(
+            codex.meta.as_ref().and_then(|meta| meta.codex_official),
+            Some(true)
+        );
+
+        let gemini =
+            build_provider_template_seed(&AppType::Gemini, ProviderAddTemplate::GoogleOauth, &[])
+                .expect("build Google OAuth provider");
+        assert_eq!(gemini.name, "Google OAuth");
+        assert_eq!(gemini.category.as_deref(), Some("official"));
+        assert_eq!(gemini.settings_config, json!({ "env": {} }));
+        assert!(gemini.settings_config.get("config").is_none());
+        assert_eq!(
+            gemini
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.partner_promotion_key.as_deref()),
+            Some("google-official")
+        );
+    }
+
+    #[test]
+    fn cli_sponsor_templates_match_tui_partner_metadata_and_app_shapes() {
+        let codex =
+            build_provider_template_seed(&AppType::Codex, ProviderAddTemplate::Packycode, &[])
+                .expect("build PackyCode Codex provider");
+        let codex_config = codex
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("Codex sponsor config should be TOML string");
+        assert_eq!(codex.name, "PackyCode");
+        assert!(codex_config.contains("base_url = \"https://www.packyapi.com/v1\""));
+        assert!(codex_config.contains("model = \"gpt-5.4\""));
+        assert!(codex_config.contains("wire_api = \"responses\""));
+        assert_eq!(
+            codex
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.partner_promotion_key.as_deref()),
+            Some("packycode")
+        );
+        assert_eq!(
+            codex.meta.as_ref().and_then(|meta| meta.is_partner),
+            Some(true)
+        );
+
+        let opencode = build_provider_template_seed(
+            &AppType::OpenCode,
+            ProviderAddTemplate::Aicodemirror,
+            &[],
+        )
+        .expect("build AICodeMirror OpenCode provider");
+        assert_eq!(opencode.settings_config["npm"], "@ai-sdk/anthropic");
+        assert_eq!(
+            opencode.settings_config["options"]["baseURL"],
+            "https://api.aicodemirror.com/api/claudecode"
+        );
+        assert_eq!(
+            opencode.settings_config["models"]["claude-opus-4.6"]["name"],
+            "Claude Opus 4.6"
+        );
+        assert_eq!(
+            opencode
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.partner_promotion_key.as_deref()),
+            Some("aicodemirror")
+        );
+
+        let openclaw =
+            build_provider_template_seed(&AppType::OpenClaw, ProviderAddTemplate::Cubence, &[])
+                .expect("build Cubence OpenClaw provider");
+        assert_eq!(openclaw.settings_config["api"], "openai-completions");
+        assert_eq!(
+            openclaw.settings_config["baseUrl"],
+            "https://api.cubence.com"
+        );
+        assert!(
+            openclaw.settings_config.get("models").is_none(),
+            "Cubence OpenClaw preset should match TUI by leaving models omitted"
+        );
+        assert_eq!(
+            openclaw
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.partner_promotion_key.as_deref()),
+            Some("cubence")
         );
     }
 
@@ -499,6 +1380,48 @@ mod tests {
     }
 
     #[test]
+    fn openclaw_cubence_template_prompt_can_preserve_omitted_models() {
+        let seed =
+            build_provider_template_seed(&AppType::OpenClaw, ProviderAddTemplate::Cubence, &[])
+                .expect("build Cubence OpenClaw seed");
+        assert!(
+            seed.settings_config.get("models").is_none(),
+            "Cubence seed should match TUI by omitting models"
+        );
+
+        let models = parse_openclaw_models_json("", false)
+            .expect("template prompt should allow omitted models");
+        let cfg = build_openclaw_settings_config_with_optional_models(
+            Some(&seed.settings_config),
+            crate::openclaw_config::OPENCLAW_DEFAULT_API_PROTOCOL,
+            "",
+            seed.settings_config["baseUrl"]
+                .as_str()
+                .expect("seed baseUrl should exist"),
+            false,
+            models,
+        )
+        .expect("build OpenClaw settings");
+
+        assert_eq!(
+            cfg["api"],
+            crate::openclaw_config::OPENCLAW_DEFAULT_API_PROTOCOL
+        );
+        assert_eq!(cfg["baseUrl"], "https://api.cubence.com");
+        assert!(
+            cfg.get("models").is_none(),
+            "OpenClaw Cubence template prompt must preserve TUI omitted-models shape"
+        );
+    }
+
+    #[test]
+    fn openclaw_custom_add_still_requires_models() {
+        let err = parse_openclaw_models_json("", true)
+            .expect_err("custom OpenClaw add should still require models");
+        assert!(err.to_string().contains("models"));
+    }
+
+    #[test]
     fn openclaw_edit_defaults_read_canonical_settings() {
         let defaults = OpenClawPromptDefaults::from_settings(Some(&json!({
             "api": "openai-responses",
@@ -523,18 +1446,14 @@ mod tests {
     }
 }
 
-pub fn prompt_settings_config_for_add(
-    app_type: &AppType,
-    mode: ProviderAddMode,
-) -> Result<Value, AppError> {
-    match (app_type, mode) {
-        (AppType::Claude, _) => prompt_claude_config(None),
-        (AppType::Codex, ProviderAddMode::Official) => prompt_codex_official_config(None),
-        (AppType::Codex, ProviderAddMode::ThirdParty) => prompt_codex_config(None),
-        (AppType::Gemini, _) => prompt_gemini_config(None),
-        (AppType::OpenCode, _) => prompt_opencode_config(None),
-        (AppType::Hermes, _) => prompt_hermes_config(None),
-        (AppType::OpenClaw, _) => prompt_openclaw_config(None),
+pub fn prompt_settings_config_for_add(app_type: &AppType) -> Result<Value, AppError> {
+    match app_type {
+        AppType::Claude => prompt_claude_config(None),
+        AppType::Codex => prompt_codex_config(None),
+        AppType::Gemini => prompt_gemini_config(None),
+        AppType::OpenCode => prompt_opencode_config(None),
+        AppType::Hermes => prompt_hermes_config(None),
+        AppType::OpenClaw => prompt_openclaw_config(None),
     }
 }
 
@@ -558,31 +1477,99 @@ fn build_codex_settings_config(
     let base_url = base_url.trim();
     let provider_key = clean_codex_provider_key(provider_key);
 
-    // Align with upstream: use full config.toml format with [model_providers.<key>]
-    let config_toml = [
-        format!("model_provider = \"{}\"", provider_key),
-        format!("model = \"{}\"", model),
-        "model_reasoning_effort = \"high\"".to_string(),
-        "disable_response_storage = true".to_string(),
-        String::new(),
-        format!("[model_providers.{}]", provider_key),
-        format!("name = \"{}\"", provider_key),
-        format!("base_url = \"{}\"", base_url),
-        format!("wire_api = \"{}\"", wire_api),
-        "requires_openai_auth = true".to_string(),
-        String::new(),
-    ]
-    .join("\n");
+    let config_toml = crate::codex_config::build_codex_provider_config_toml(
+        &provider_key,
+        base_url,
+        model,
+        wire_api,
+    )
+    .trim()
+    .to_string();
 
     match api_key {
-        Some(key) => json!({
-            "auth": { "OPENAI_API_KEY": key.trim() },
-            "config": config_toml
-        }),
+        Some(key) if !key.trim().is_empty() => {
+            json!({
+                "auth": { "OPENAI_API_KEY": key.trim() },
+                "config": config_toml
+            })
+        }
         None => json!({
             "config": config_toml
         }),
+        Some(_) => json!({
+            "config": config_toml
+        }),
     }
+}
+
+fn build_codex_settings_config_from_prompt(
+    current: Option<&Value>,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    fallback_provider_key: &str,
+) -> Value {
+    let model = if model.trim().is_empty() {
+        "gpt-5.4"
+    } else {
+        model.trim()
+    };
+    let base_url = base_url.trim().trim_end_matches('/');
+    let current_config = current
+        .and_then(|value| value.get("config"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let base_config = if current_config.trim().is_empty() {
+        let provider_key = clean_codex_provider_key(fallback_provider_key);
+        crate::codex_config::build_codex_provider_config_toml(
+            &provider_key,
+            base_url,
+            model,
+            "responses",
+        )
+    } else {
+        current_config.to_string()
+    };
+    let config_toml = crate::codex_config::update_codex_config_snippet(
+        &base_config,
+        base_url,
+        model,
+        "responses",
+        true,
+        "OPENAI_API_KEY",
+    );
+
+    let mut settings_obj = Map::new();
+    settings_obj.insert("config".to_string(), Value::String(config_toml));
+
+    let mut auth = current
+        .and_then(|value| value.get("auth"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        auth.remove("OPENAI_API_KEY");
+    } else {
+        auth.insert("OPENAI_API_KEY".to_string(), json!(api_key));
+    }
+    if !auth.is_empty() {
+        settings_obj.insert("auth".to_string(), Value::Object(auth));
+    }
+
+    Value::Object(settings_obj)
+}
+
+fn build_gemini_oauth_settings_config() -> Value {
+    json!({ "env": {} })
+}
+
+fn build_gemini_api_key_settings_config(api_key: &str, base_url: &str, model: &str) -> Value {
+    let mut env = Map::new();
+    set_or_remove_trimmed(&mut env, "GEMINI_API_KEY", api_key);
+    set_or_remove_trimmed(&mut env, "GOOGLE_GEMINI_BASE_URL", base_url);
+    set_or_remove_trimmed(&mut env, "GEMINI_MODEL", model);
+    json!({ "env": env })
 }
 
 fn build_codex_official_settings_config(current: Option<&Value>) -> Result<Value, AppError> {
@@ -1227,7 +2214,6 @@ impl OpenClawPromptDefaults {
             .map(|models| Value::Array(models.clone()))
             .and_then(|value| serde_json::to_string(&value).ok())
             .unwrap_or_else(|| "[]".to_string());
-
         Self {
             api,
             api_key,
@@ -1307,9 +2293,9 @@ fn prompt_openclaw_config(current: Option<&Value>) -> Result<Value, AppError> {
             .prompt()
     }
     .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
-    let models_value = parse_openclaw_models_json(&models_json)?;
+    let models_value = parse_openclaw_models_json(&models_json, current.is_none())?;
 
-    build_openclaw_settings_config(
+    build_openclaw_settings_config_with_optional_models(
         current,
         &api,
         &api_key,
@@ -1326,6 +2312,24 @@ fn build_openclaw_settings_config(
     base_url: &str,
     user_agent_enabled: bool,
     models_value: Value,
+) -> Result<Value, AppError> {
+    build_openclaw_settings_config_with_optional_models(
+        current,
+        api,
+        api_key,
+        base_url,
+        user_agent_enabled,
+        Some(models_value),
+    )
+}
+
+fn build_openclaw_settings_config_with_optional_models(
+    current: Option<&Value>,
+    api: &str,
+    api_key: &str,
+    base_url: &str,
+    user_agent_enabled: bool,
+    models_value: Option<Value>,
 ) -> Result<Value, AppError> {
     let mut settings_obj = current
         .and_then(Value::as_object)
@@ -1364,8 +2368,12 @@ fn build_openclaw_settings_config(
         settings_obj.insert("headers".to_string(), Value::Object(headers_obj));
     }
 
-    let models_value = normalize_openclaw_models_value(models_value)?;
-    settings_obj.insert("models".to_string(), models_value);
+    if let Some(models_value) = models_value {
+        let models_value = normalize_openclaw_models_value(models_value)?;
+        settings_obj.insert("models".to_string(), models_value);
+    } else {
+        settings_obj.remove("models");
+    }
 
     serde_json::from_value::<crate::provider::OpenClawProviderConfig>(Value::Object(
         settings_obj.clone(),
@@ -1381,14 +2389,24 @@ fn build_openclaw_settings_config(
     Ok(Value::Object(settings_obj))
 }
 
-fn parse_openclaw_models_json(raw: &str) -> Result<Value, AppError> {
+fn parse_openclaw_models_json(
+    raw: &str,
+    require_non_empty: bool,
+) -> Result<Option<Value>, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(openclaw_models_required_error());
+        return if require_non_empty {
+            Err(openclaw_models_required_error())
+        } else {
+            Ok(None)
+        };
     }
     let value = serde_json::from_str::<Value>(trimmed)
         .map_err(|err| AppError::InvalidInput(texts::tui_toast_invalid_json(&err.to_string())))?;
-    normalize_openclaw_models_value(value)
+    if !require_non_empty && value.as_array().is_some_and(Vec::is_empty) {
+        return Ok(None);
+    }
+    normalize_openclaw_models_value(value).map(Some)
 }
 
 fn normalize_openclaw_models_value(value: Value) -> Result<Value, AppError> {
@@ -1745,10 +2763,7 @@ fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
         .prompt()
         .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
 
-    let mut env = serde_json::Map::new();
-    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(api_key.trim()));
-    env.insert("ANTHROPIC_BASE_URL".to_string(), json!(base_url.trim()));
-
+    let mut model_fields = Vec::new();
     if config_models {
         // 使用新的辅助函数处理四个模型字段
         let model = prompt_model_field(
@@ -1779,22 +2794,40 @@ fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
             current,
         )?;
 
-        // 条件写入：只在值存在时写入配置
-        if let Some(value) = model {
-            env.insert("ANTHROPIC_MODEL".to_string(), json!(value));
-        }
-        if let Some(value) = haiku {
-            env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), json!(value));
-        }
-        if let Some(value) = sonnet {
-            env.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(), json!(value));
-        }
-        if let Some(value) = opus {
-            env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(), json!(value));
+        model_fields.extend([
+            ("ANTHROPIC_MODEL", model),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", haiku),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", sonnet),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", opus),
+        ]);
+    }
+
+    Ok(build_claude_settings_config_from_prompt(
+        &api_key,
+        &base_url,
+        model_fields,
+    ))
+}
+
+fn build_claude_settings_config_from_prompt<'a>(
+    api_key: &str,
+    base_url: &str,
+    model_fields: impl IntoIterator<Item = (&'a str, Option<String>)>,
+) -> Value {
+    let mut env = Map::new();
+    set_or_remove_trimmed(&mut env, "ANTHROPIC_AUTH_TOKEN", api_key);
+    set_or_remove_trimmed(&mut env, "ANTHROPIC_BASE_URL", base_url);
+
+    for (key, value) in model_fields {
+        match value {
+            Some(value) => set_or_remove_trimmed(&mut env, key, &value),
+            None => {
+                env.remove(key);
+            }
         }
     }
 
-    Ok(json!({ "env": env }))
+    json!({ "env": env })
 }
 
 /// Codex 配置输入（第三方/自定义：需要 API Key）
@@ -1892,11 +2925,11 @@ fn prompt_codex_config(current: Option<&Value>) -> Result<Value, AppError> {
             .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
     };
 
-    Ok(build_codex_settings_config(
-        Some(api_key.trim()),
+    Ok(build_codex_settings_config_from_prompt(
+        current,
+        &api_key,
         &base_url,
         model.trim(),
-        "responses",
         "custom",
     ))
 }
@@ -1935,10 +2968,7 @@ fn prompt_gemini_config(current: Option<&Value>) -> Result<Value, AppError> {
 
     if auth_type == google_oauth {
         println!("{}", texts::use_google_oauth_warning().yellow());
-        Ok(json!({
-            "env": {},
-            "config": {}
-        }))
+        Ok(build_gemini_oauth_settings_config())
     } else {
         // Generic API Key (统一处理所有 API Key 供应商，包括 PackyCode)
         let api_key = if let Some(current_key) = current
@@ -1973,19 +3003,34 @@ fn prompt_gemini_config(current: Option<&Value>) -> Result<Value, AppError> {
                 .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
         } else {
             Text::new(texts::gemini_base_url_label())
-                .with_placeholder(texts::gemini_base_url_placeholder())
+                .with_initial_value(texts::gemini_base_url_placeholder())
                 .with_help_message(texts::gemini_base_url_help())
                 .prompt()
                 .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
         };
 
-        Ok(json!({
-            "env": {
-                "GEMINI_API_KEY": api_key.trim(),
-                "GOOGLE_GEMINI_BASE_URL": base_url.trim()
-            },
-            "config": {}
-        }))
+        let model = if let Some(current_model) = current
+            .and_then(|v| v.get("env"))
+            .and_then(|e| e.get("GEMINI_MODEL"))
+            .and_then(|u| u.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Text::new(&format!("{}:", texts::model_label()))
+                .with_initial_value(current_model)
+                .with_help_message(texts::model_default_help())
+                .prompt()
+                .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+        } else {
+            Text::new(&format!("{}:", texts::model_label()))
+                .with_placeholder("gemini-3-pro-preview")
+                .with_help_message(texts::model_default_help())
+                .prompt()
+                .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+        };
+
+        Ok(build_gemini_api_key_settings_config(
+            &api_key, &base_url, &model,
+        ))
     }
 }
 
