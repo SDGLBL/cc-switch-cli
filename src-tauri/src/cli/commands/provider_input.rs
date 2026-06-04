@@ -3814,6 +3814,19 @@ pub fn display_provider_summary(provider: &Provider, app_type: &AppType) {
             }
         }
         AppType::Codex => {
+            if !provider.is_codex_official() {
+                let api_format =
+                    if crate::proxy::providers::codex_provider_uses_chat_completions(provider) {
+                        "openai_chat"
+                    } else {
+                        "openai_responses"
+                    };
+                println!(
+                    "  {}: {}",
+                    texts::tui_label_claude_api_format(),
+                    texts::tui_codex_api_format_value(api_format)
+                );
+            }
             if let Some(auth) = provider.settings_config.get("auth") {
                 if let Some(api_key) = auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
                     println!(

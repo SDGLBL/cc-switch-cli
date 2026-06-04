@@ -388,6 +388,10 @@ pub enum TextSubmit {
     OpenClawAgentsRuntimeField {
         field: OpenClawAgentsRuntimeField,
     },
+    CodexModelCatalogField {
+        row: Option<usize>,
+        field: form::CodexModelCatalogField,
+    },
     WebDavJianguoyunUsername,
     WebDavJianguoyunPassword,
 }

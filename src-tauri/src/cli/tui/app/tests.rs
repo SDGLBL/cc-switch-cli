@@ -12,7 +12,9 @@ mod tests {
 
     use crate::cli::i18n::{texts, use_test_language, Language};
     use crate::cli::tui::data::ProviderRow;
-    use crate::cli::tui::form::{McpEnvVarRow, McpTransport, ProviderAddFormState, TextInput};
+    use crate::cli::tui::form::{
+        CodexModelCatalogField, McpEnvVarRow, McpTransport, ProviderAddFormState, TextInput,
+    };
     use crate::cli::tui::runtime_actions::{
         handle_action, run_external_editor_for_prompt_form_content,
     };
@@ -11963,6 +11965,257 @@ mod tests {
             app.overlay,
             Overlay::ClaudeApiFormatPicker { selected: 0 }
         ));
+    }
+
+    #[test]
+    fn provider_codex_local_routing_field_enter_opens_page() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+
+        if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.focus = super::super::form::FormFocus::Fields;
+            form.editing = false;
+            form.field_idx = form
+                .fields()
+                .iter()
+                .position(|field| *field == ProviderAddField::CodexLocalRouting)
+                .expect("Codex local routing field should exist");
+        } else {
+            panic!("expected ProviderAdd form");
+        }
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(action, Action::None));
+
+        let page = match app.form.as_ref() {
+            Some(super::super::form::FormState::ProviderAdd(form)) => form.page,
+            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        };
+        assert_eq!(
+            page,
+            super::super::form::ProviderFormPage::CodexLocalRouting
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn provider_codex_local_routing_toggle_warns_when_proxy_not_enabled() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+
+        if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.focus = super::super::form::FormFocus::Fields;
+            form.editing = false;
+            form.codex_base_url.set("https://api.example.com/v1");
+            form.field_idx = form
+                .fields()
+                .iter()
+                .position(|field| *field == ProviderAddField::CodexLocalRouting)
+                .expect("Codex local routing field should exist");
+        } else {
+            panic!("expected ProviderAdd form");
+        }
+
+        app.on_key(key(KeyCode::Enter), &data);
+        let action = app.on_key(key(KeyCode::Enter), &data);
+
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::ProviderApiFormatProxyNotice,
+                ..
+            })
+        ));
+        let format = match app.form.as_ref() {
+            Some(super::super::form::FormState::ProviderAdd(form)) => form.claude_api_format,
+            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        };
+        assert_eq!(format, super::super::form::ClaudeApiFormat::OpenAiChat);
+    }
+
+    #[test]
+    fn provider_codex_local_routing_toggle_does_not_warn_when_proxy_routes_current_app() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.proxy.running = true;
+        data.proxy.codex_takeover = true;
+
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+
+        if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.focus = super::super::form::FormFocus::Fields;
+            form.editing = false;
+            form.codex_base_url.set("https://api.example.com/v1");
+            form.field_idx = form
+                .fields()
+                .iter()
+                .position(|field| *field == ProviderAddField::CodexLocalRouting)
+                .expect("Codex local routing field should exist");
+        } else {
+            panic!("expected ProviderAdd form");
+        }
+
+        app.on_key(key(KeyCode::Enter), &data);
+        let action = app.on_key(key(KeyCode::Enter), &data);
+
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        let format = match app.form.as_ref() {
+            Some(super::super::form::FormState::ProviderAdd(form)) => form.claude_api_format,
+            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        };
+        assert_eq!(format, super::super::form::ClaudeApiFormat::OpenAiChat);
+    }
+
+    #[test]
+    fn provider_codex_local_routing_model_catalog_opens_list_page_and_adds_models() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.proxy.running = true;
+        data.proxy.codex_takeover = true;
+
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+
+        if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.focus = super::super::form::FormFocus::Fields;
+            form.editing = false;
+            form.codex_base_url.set("https://api.example.com/v1");
+            form.field_idx = form
+                .fields()
+                .iter()
+                .position(|field| *field == ProviderAddField::CodexLocalRouting)
+                .expect("Codex local routing field should exist");
+        } else {
+            panic!("expected ProviderAdd form");
+        }
+
+        app.on_key(key(KeyCode::Enter), &data); // open local routing page
+        app.on_key(key(KeyCode::Enter), &data); // enable local routing
+        app.on_key(key(KeyCode::Down), &data);
+        app.on_key(key(KeyCode::Down), &data);
+        app.on_key(key(KeyCode::Down), &data);
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(action, Action::None));
+        assert!(app.editor.is_none());
+        assert!(matches!(
+            app.form,
+            Some(super::super::form::FormState::ProviderAdd(ref form))
+                if matches!(form.page, super::super::form::ProviderFormPage::CodexModelCatalog)
+        ));
+
+        app.on_key(key(KeyCode::Char('+')), &data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::TextInput(TextInputState {
+                submit: TextSubmit::CodexModelCatalogField {
+                    row: None,
+                    field: CodexModelCatalogField::Model,
+                },
+                ..
+            })
+        ));
+        for ch in "deepseek-chat".chars() {
+            app.on_key(key(KeyCode::Char(ch)), &data);
+        }
+        app.on_key(key(KeyCode::Enter), &data);
+
+        let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected ProviderAdd form");
+        };
+        assert_eq!(form.codex_model_catalog.len(), 1);
+        assert_eq!(form.codex_model_catalog[0].model, "deepseek-chat");
+
+        app.on_key(key(KeyCode::Right), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::TextInput(TextInputState {
+                submit: TextSubmit::CodexModelCatalogField {
+                    row: Some(0),
+                    field: CodexModelCatalogField::DisplayName,
+                },
+                ..
+            })
+        ));
+        for ch in "DeepSeek Chat".chars() {
+            app.on_key(key(KeyCode::Char(ch)), &data);
+        }
+        app.on_key(key(KeyCode::Enter), &data);
+
+        app.on_key(key(KeyCode::Right), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::TextInput(TextInputState {
+                submit: TextSubmit::CodexModelCatalogField {
+                    row: Some(0),
+                    field: CodexModelCatalogField::ContextWindow,
+                },
+                ..
+            })
+        ));
+        for ch in "256k".chars() {
+            app.on_key(key(KeyCode::Char(ch)), &data);
+        }
+        app.on_key(key(KeyCode::Enter), &data);
+
+        let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected ProviderAdd form");
+        };
+        assert_eq!(form.codex_model_catalog[0].display_name, "DeepSeek Chat");
+        assert_eq!(form.codex_model_catalog[0].context_window, "256k");
+        assert_eq!(
+            form.codex_model_catalog_field,
+            CodexModelCatalogField::ContextWindow
+        );
+
+        let action = app.on_key(key(KeyCode::Char('f')), &data);
+        assert!(matches!(
+            action,
+            Action::ProviderModelFetch {
+                field: ProviderAddField::CodexLocalRouting,
+                ..
+            }
+        ));
+
+        app.overlay = Overlay::ModelFetchPicker {
+            request_id: 1,
+            field: ProviderAddField::CodexLocalRouting,
+            claude_idx: None,
+            input: TextInput::new("kimi-k2"),
+            query: "kimi-k2".to_string(),
+            fetching: false,
+            models: vec!["kimi-k2".to_string()],
+            error: None,
+            selected_idx: 0,
+        };
+        app.on_key(key(KeyCode::Enter), &data);
+
+        let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected ProviderAdd form");
+        };
+        assert_eq!(form.codex_model_catalog.len(), 2);
+        assert_eq!(form.codex_model_catalog[1].model, "kimi-k2");
     }
 
     #[test]
