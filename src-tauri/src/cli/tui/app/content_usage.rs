@@ -9,6 +9,15 @@ impl UsageMetric {
             Self::Errors => Self::Cost,
         }
     }
+
+    pub(crate) fn previous(self) -> Self {
+        match self {
+            Self::Cost => Self::Errors,
+            Self::Tokens => Self::Cost,
+            Self::Requests => Self::Tokens,
+            Self::Errors => Self::Requests,
+        }
+    }
 }
 
 impl UsagePane {
@@ -31,6 +40,8 @@ impl UsagePane {
 
 impl App {
     pub(crate) fn on_usage_key(&mut self, key: KeyEvent, data: &UiData) -> Action {
+        let is_backtab = matches!(key.code, KeyCode::BackTab)
+            || (matches!(key.code, KeyCode::Tab) && key.modifiers.contains(KeyModifiers::SHIFT));
         match key.code {
             KeyCode::Char('1') => {
                 self.set_usage_range(data::UsageRangePreset::Today, data);
@@ -44,7 +55,11 @@ impl App {
                 self.set_usage_range(data::UsageRangePreset::ThirtyDays, data);
                 Action::None
             }
-            KeyCode::Char('m') => {
+            _ if is_backtab => {
+                self.usage.metric = self.usage.metric.previous();
+                Action::None
+            }
+            KeyCode::Tab => {
                 self.usage.metric = self.usage.metric.next();
                 Action::None
             }

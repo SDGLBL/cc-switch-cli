@@ -13912,10 +13912,13 @@ mod tests {
         ));
 
         app.on_key(key(KeyCode::Char('m')), &data);
-        assert!(matches!(app.usage.metric, UsageMetric::Tokens));
+        assert!(matches!(app.usage.metric, UsageMetric::Cost));
 
         app.on_key(key(KeyCode::Tab), &data);
-        assert!(matches!(app.usage.pane, UsagePane::Models));
+        assert!(matches!(app.usage.metric, UsageMetric::Tokens));
+
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT), &data);
+        assert!(matches!(app.usage.metric, UsageMetric::Cost));
 
         app.on_key(key(KeyCode::Right), &data);
         assert!(matches!(app.usage.pane, UsagePane::Models));

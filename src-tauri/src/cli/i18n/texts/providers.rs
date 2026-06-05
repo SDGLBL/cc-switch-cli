@@ -1076,9 +1076,9 @@ pub fn tui_key_focus() -> &'static str {
 
 pub fn tui_key_pane() -> &'static str {
     if is_chinese() {
-        "切换区域"
+        "切换面板"
     } else {
-        "pane"
+        "switch panel"
     }
 }
 

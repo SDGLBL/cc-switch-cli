@@ -39,7 +39,7 @@ pub(super) fn render_usage(
                 ("1", usage_text("Today", "今日")),
                 ("2", usage_text("7 days", "7天")),
                 ("3", usage_text("30 days", "30天")),
-                ("m", usage_text("metric", "指标")),
+                ("Tab", texts::tui_key_pane()),
                 ("L", usage_text("details", "详情")),
                 ("r", texts::tui_key_refresh()),
             ],
