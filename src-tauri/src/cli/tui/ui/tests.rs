@@ -170,10 +170,14 @@ fn tui_usage_renders_summary_and_trend() {
     assert!(all.contains("$1.250"), "{all}");
     assert!(all.contains("1.8k"), "{all}");
     assert!(all.contains("Real Tokens"), "{all}");
-    assert!(all.contains("Input / Output"), "{all}");
+    assert!(all.contains("Input"), "{all}");
+    assert!(all.contains("Output"), "{all}");
     assert!(all.contains("Cache Read"), "{all}");
     assert!(all.contains("Cache Write"), "{all}");
+    assert!(all.contains("Errors"), "{all}");
     assert!(all.contains("Avg Latency"), "{all}");
+    assert!(all.contains("Cache Tokens"), "{all}");
+    assert!(all.contains("Cost / Req"), "{all}");
     assert!(all.contains("Cache Hit"), "{all}");
     assert!(all.contains("19%"), "{all}");
     assert!(all.contains("06/05"), "{all}");
@@ -219,6 +223,34 @@ fn tui_usage_compact_trend_omits_text_summary() {
     assert!(!all.contains("Total"), "{all}");
     assert!(!all.contains("Range"), "{all}");
     assert!(!all.contains("06/04 -> 06/05"), "{all}");
+}
+
+#[test]
+fn tui_usage_trend_renders_midpoint_axis_labels() {
+    let _lang = use_test_language(Language::English);
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Usage;
+    app.focus = Focus::Content;
+    let mut data = minimal_data(&app.app_type);
+    data.usage.trends_7d = (1..=7)
+        .map(|day| UsageTrendBucket {
+            key: format!("2026-06-{day:02}"),
+            label: format!("06/{day:02}"),
+            request_count: day as u64,
+            total_tokens: day as u64 * 100,
+            total_cost_usd: day as f64 / 10.0,
+            error_count: 0,
+        })
+        .collect();
+
+    let all = all_text(&render_with_size(&app, &data, 180, 42));
+
+    assert!(all.contains("06/01"), "{all}");
+    assert!(all.contains("06/04"), "{all}");
+    assert!(all.contains("06/07"), "{all}");
+    assert!(all.contains("$0.500"), "{all}");
+    assert!(all.contains("$1.000"), "{all}");
 }
 
 #[test]

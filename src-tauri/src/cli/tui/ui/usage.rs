@@ -25,7 +25,7 @@ pub(super) fn render_usage(
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(7),
+            Constraint::Length(9),
             Constraint::Min(0),
         ])
         .split(inner);
@@ -165,7 +165,7 @@ fn render_usage_metrics(
         .border_style(Style::default().fg(theme.dim))
         .title(format!(" {} ", usage_text("Overview", "概览")));
     let block_inner = block.inner(area);
-    let inner = inset_left(block_inner, CONTENT_INSET_LEFT);
+    let inner = inset_horizontal(block_inner, CONTENT_INSET_LEFT, CONTENT_INSET_LEFT);
     if inner.width < 20 || inner.height == 0 {
         render_usage_metrics_untitled_compact(frame, summary, area, theme);
         return;
@@ -175,6 +175,25 @@ fn render_usage_metrics(
 
     if inner.height < 4 {
         render_usage_metrics_compact(frame, summary, inner, theme);
+        return;
+    }
+
+    if inner.height >= 6 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(inner);
+
+        render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[1], &usage_secondary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[2], &usage_tertiary_metrics(summary), theme);
+        render_usage_cache_hit_line(frame, summary, rows[4], theme);
         return;
     }
 
@@ -242,12 +261,12 @@ fn usage_primary_metrics(summary: &UsageSummarySnapshot) -> [UsageMetricCard; 4]
 fn usage_secondary_metrics(summary: &UsageSummarySnapshot) -> [UsageMetricCard; 4] {
     [
         UsageMetricCard {
-            label: usage_text("Input / Output", "输入 / 输出"),
-            value: format!(
-                "{} / {}",
-                format_token_compact(summary.input_tokens),
-                format_token_compact(summary.output_tokens)
-            ),
+            label: usage_text("Input", "输入"),
+            value: format_token_compact(summary.input_tokens),
+        },
+        UsageMetricCard {
+            label: usage_text("Output", "输出"),
+            value: format_token_compact(summary.output_tokens),
         },
         UsageMetricCard {
             label: usage_text("Cache Read", "缓存读取"),
@@ -257,15 +276,53 @@ fn usage_secondary_metrics(summary: &UsageSummarySnapshot) -> [UsageMetricCard; 
             label: usage_text("Cache Write", "缓存写入"),
             value: format_token_compact(summary.cache_creation_tokens),
         },
+    ]
+}
+
+fn usage_tertiary_metrics(summary: &UsageSummarySnapshot) -> [UsageMetricCard; 4] {
+    [
+        UsageMetricCard {
+            label: usage_text("Errors", "错误"),
+            value: summary
+                .total_requests
+                .saturating_sub(summary.success_count)
+                .to_string(),
+        },
         UsageMetricCard {
             label: usage_text("Avg Latency", "平均延迟"),
             value: format_ms(summary.avg_latency_ms),
+        },
+        UsageMetricCard {
+            label: usage_text("Cache Tokens", "缓存 Token"),
+            value: format_token_compact(
+                summary
+                    .cache_read_tokens
+                    .saturating_add(summary.cache_creation_tokens),
+            ),
+        },
+        UsageMetricCard {
+            label: usage_text("Cost / Req", "单次费用"),
+            value: format_money_per_request(summary.total_cost_usd, summary.total_requests),
         },
     ]
 }
 
 fn usage_metric_value_style(theme: &super::theme::Theme) -> Style {
     Style::default().fg(theme.accent)
+}
+
+fn inset_horizontal(area: Rect, left: u16, right: u16) -> Rect {
+    let total = left.saturating_add(right);
+    if area.width <= total {
+        return area;
+    }
+
+    Rect {
+        x: area.x + left,
+        y: area.y,
+        width: area.width - total,
+        height: area.height,
+    }
 }
 
 fn render_usage_metric_row(
@@ -278,15 +335,27 @@ fn render_usage_metric_row(
         return;
     }
 
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(area);
+    let gap = if area.width >= 72 { 2 } else { 1 };
+    let gaps_width = gap * 3;
+    let available_width = area.width.saturating_sub(gaps_width);
+    let base_width = available_width / 4;
+    if base_width < 8 {
+        return;
+    }
+
+    let mut columns = [Rect::new(area.x, area.y, 0, area.height); 4];
+    let mut x = area.x;
+    let mut remainder = available_width % 4;
+    for (idx, column) in columns.iter_mut().enumerate() {
+        let extra = u16::from(remainder > 0);
+        remainder = remainder.saturating_sub(1);
+        let width = base_width + extra;
+        *column = Rect::new(x, area.y, width, area.height);
+        x = x.saturating_add(width);
+        if idx + 1 < cards.len() {
+            x = x.saturating_add(gap);
+        }
+    }
 
     for (idx, card) in cards.iter().enumerate() {
         render_usage_metric_card(frame, columns[idx], card, theme);
@@ -315,7 +384,7 @@ fn render_usage_metric_card(
         return;
     }
 
-    let label = truncate_to_display_width(card.label, label_width);
+    let label = truncate_pad_to_display_width(card.label, label_width);
     let value = truncate_to_display_width(&card.value, value_width);
     if label.is_empty() || value.is_empty() {
         return;
@@ -332,6 +401,17 @@ fn render_usage_metric_card(
         ])),
         area,
     );
+}
+
+fn truncate_pad_to_display_width(text: &str, width: u16) -> String {
+    let truncated = truncate_to_display_width(text, width);
+    let display_width = UnicodeWidthStr::width(truncated.as_str());
+    let target_width = width as usize;
+    if display_width >= target_width {
+        truncated
+    } else {
+        format!("{truncated}{}", " ".repeat(target_width - display_width))
+    }
 }
 
 fn render_usage_metrics_compact(
@@ -462,7 +542,7 @@ fn render_usage_cache_hit_line(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.dim));
-    let inner = inset_left(block.inner(area), CONTENT_INSET_LEFT);
+    let inner = inset_horizontal(block.inner(area), CONTENT_INSET_LEFT, CONTENT_INSET_LEFT);
     if inner.width < 12 || inner.height == 0 {
         return;
     }
@@ -510,7 +590,7 @@ fn render_usage_trend(
         .border_style(Style::default().fg(theme.dim))
         .title(title);
     frame.render_widget(block.clone(), area);
-    let inner = inset_left(block.inner(area), CONTENT_INSET_LEFT);
+    let inner = inset_horizontal(block.inner(area), CONTENT_INSET_LEFT, 4);
 
     let trend = data.usage.trend_for(app.usage.range);
     if trend
@@ -575,6 +655,37 @@ fn render_usage_line_chart(
         .last()
         .map(|bucket| bucket.label.clone())
         .unwrap_or_else(|| "-".to_string());
+    let middle_label = buckets
+        .get(buckets.len() / 2)
+        .map(|bucket| bucket.label.clone());
+    let mut x_labels = Vec::from([Line::styled(
+        truncate_to_display_width(&first_label, 8),
+        Style::default().fg(theme.comment),
+    )]);
+    if buckets.len() > 2 {
+        if let Some(label) = middle_label {
+            x_labels.push(Line::styled(
+                truncate_to_display_width(&label, 8),
+                Style::default().fg(theme.comment),
+            ));
+        }
+    }
+    x_labels.push(Line::styled(
+        truncate_to_display_width(&last_label, 8),
+        Style::default().fg(theme.comment),
+    ));
+
+    let y_labels = [
+        Line::styled("0", Style::default().fg(theme.comment)),
+        Line::styled(
+            format_metric_value(max_value / 2.0, metric),
+            Style::default().fg(theme.comment),
+        ),
+        Line::styled(
+            format_metric_value(max_value, metric),
+            Style::default().fg(theme.comment),
+        ),
+    ];
 
     let dataset = Dataset::default()
         .name(usage_metric_label(metric))
@@ -588,28 +699,14 @@ fn render_usage_line_chart(
             Axis::default()
                 .style(Style::default().fg(theme.dim))
                 .bounds([0.0, last_x])
-                .labels([
-                    Line::styled(
-                        truncate_to_display_width(&first_label, 8),
-                        Style::default().fg(theme.comment),
-                    ),
-                    Line::styled(
-                        truncate_to_display_width(&last_label, 8),
-                        Style::default().fg(theme.comment),
-                    ),
-                ]),
+                .labels(x_labels),
         )
         .y_axis(
             Axis::default()
                 .style(Style::default().fg(theme.dim))
                 .bounds([0.0, max_value * 1.05])
-                .labels([
-                    Line::styled("0", Style::default().fg(theme.comment)),
-                    Line::styled(
-                        format_metric_value(max_value, metric),
-                        Style::default().fg(theme.comment),
-                    ),
-                ]),
+                .labels(y_labels)
+                .labels_alignment(Alignment::Right),
         );
     frame.render_widget(chart, area);
 }
@@ -1201,6 +1298,14 @@ fn format_money(value: f64) -> String {
         format!("${value:.1}")
     } else {
         format!("${value:.3}")
+    }
+}
+
+fn format_money_per_request(total_cost: f64, total_requests: u64) -> String {
+    if total_requests == 0 {
+        "-".to_string()
+    } else {
+        format_money(total_cost / total_requests as f64)
     }
 }
 
