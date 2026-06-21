@@ -136,6 +136,7 @@ impl StreamCheckService {
                     &model_to_test,
                     test_prompt,
                     request_timeout,
+                    provider,
                 )
                 .await
             }
@@ -158,6 +159,7 @@ impl StreamCheckService {
                     &model_to_test,
                     test_prompt,
                     request_timeout,
+                    provider,
                 )
                 .await
             }

@@ -7,8 +7,9 @@ use crate::provider::Provider;
 use crate::proxy::{
     gemini_url::{normalize_gemini_model_id, resolve_gemini_native_url},
     providers::{
-        get_claude_api_format, transform::anthropic_to_openai,
-        transform_gemini::anthropic_to_gemini, transform_responses::anthropic_to_responses,
+        codex_provider_uses_chat_completions, get_claude_api_format,
+        transform::anthropic_to_openai, transform_gemini::anthropic_to_gemini,
+        transform_responses::anthropic_to_responses,
     },
 };
 
@@ -171,7 +172,12 @@ impl StreamCheckService {
         model: &str,
         test_prompt: &str,
         timeout: std::time::Duration,
+        provider: &Provider,
     ) -> Result<(u16, String), AppError> {
+        if codex_provider_uses_chat_completions(provider) {
+            return Self::check_codex_chat_reachability(client, base_url, model, timeout).await;
+        }
+
         let base = base_url.trim_end_matches('/');
         let urls = if base.ends_with("/v1") {
             vec![format!("{base}/responses")]
@@ -236,6 +242,23 @@ impl StreamCheckService {
         Err(AppError::Message(
             "No valid Codex responses endpoint found".to_string(),
         ))
+    }
+
+    async fn check_codex_chat_reachability(
+        client: &Client,
+        base_url: &str,
+        model: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(u16, String), AppError> {
+        let response = client
+            .get(base_url.trim_end_matches('/'))
+            .header("accept", "*/*")
+            .timeout(timeout)
+            .send()
+            .await
+            .map_err(Self::map_request_error)?;
+
+        Ok((response.status().as_u16(), model.to_string()))
     }
 
     pub(crate) async fn check_gemini_stream(

@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::service::StreamCheckService;
-use super::types::{AuthStrategy, HealthStatus, StreamCheckConfig};
+use super::types::{AuthInfo, AuthStrategy, HealthStatus, StreamCheckConfig};
 
 fn claude_gemini_native_provider(key: &str) -> Provider {
     let mut provider = Provider::with_id(
@@ -25,6 +25,24 @@ fn claude_gemini_native_provider(key: &str) -> Provider {
         ..Default::default()
     });
     provider
+}
+
+async fn bind_test_listener() -> tokio::net::TcpListener {
+    let mut last_error = None;
+    for _ in 0..20 {
+        match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => return listener,
+            Err(error) => {
+                last_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
+
+    panic!(
+        "bind upstream listener: {:?}",
+        last_error.expect("listener bind should produce an error")
+    );
 }
 
 #[test]
@@ -104,6 +122,59 @@ fn stream_check_provider_test_config_overrides_global_defaults() {
     assert_eq!(merged.codex_model, "claude-override");
     assert_eq!(merged.gemini_model, "claude-override");
     assert_eq!(merged.test_prompt, "ping");
+}
+
+#[tokio::test]
+async fn stream_check_codex_openai_chat_uses_reachability_probe() {
+    async fn handle_reachability_check() -> impl axum::response::IntoResponse {
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    let upstream_router =
+        axum::Router::new().route("/", axum::routing::get(handle_reachability_check));
+    let upstream_listener = bind_test_listener().await;
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("read upstream address");
+    let upstream_handle = tokio::spawn(async move {
+        let _ = axum::serve(upstream_listener, upstream_router).await;
+    });
+
+    let mut provider = Provider::with_id(
+        "codex-openai-chat-check".to_string(),
+        "Codex OpenAI Chat Check".to_string(),
+        json!({
+            "base_url": format!("http://{}", upstream_addr),
+            "apiKey": "sk-test-codex",
+            "api_format": "openai_chat"
+        }),
+        None,
+    );
+    provider.meta = Some(ProviderMeta {
+        api_format: Some("openai_chat".to_string()),
+        ..ProviderMeta::default()
+    });
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build no-proxy test client");
+    let (status, model) = StreamCheckService::check_codex_stream(
+        &client,
+        &format!("http://{}", upstream_addr),
+        &AuthInfo::new("sk-test-codex".to_string(), AuthStrategy::Bearer),
+        "deepseek-chat",
+        "Who are you?",
+        std::time::Duration::from_secs(2),
+        &provider,
+    )
+    .await
+    .expect("Codex chat provider should use reachability probe");
+
+    assert_eq!(status, 204);
+    assert_eq!(model, "deepseek-chat");
+
+    upstream_handle.abort();
 }
 
 #[test]
