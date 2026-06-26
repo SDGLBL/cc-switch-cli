@@ -78,6 +78,10 @@ pub enum Commands {
     #[command(subcommand)]
     Settings(commands::settings::SettingsCommand),
 
+    /// Serve the local web dashboard (shares the cc-switch desktop frontend)
+    #[command(subcommand)]
+    Web(commands::web::WebCommand),
+
     /// Manage automatic failover and provider queue
     #[command(subcommand)]
     Failover(commands::failover::FailoverCommand),
@@ -177,6 +181,26 @@ mod tests {
                 assert_eq!(listen_port, Some(0));
             }
             _ => panic!("expected proxy serve command"),
+        }
+    }
+
+    #[test]
+    fn parses_web_serve_subcommand() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "web",
+            "serve",
+            "--assets",
+            "/tmp/assets",
+            "--port",
+            "0",
+        ]);
+
+        match cli.command {
+            Some(Commands::Web(super::commands::web::WebCommand::Serve { port, .. })) => {
+                assert_eq!(port, 0);
+            }
+            _ => panic!("expected web serve command"),
         }
     }
 

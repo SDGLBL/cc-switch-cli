@@ -69,6 +69,7 @@ fn run(cli: Cli) -> Result<(), AppError> {
         Some(Commands::Config(cmd)) => cc_switch_lib::cli::commands::config::execute(cmd, cli.app),
         Some(Commands::Proxy(cmd)) => cc_switch_lib::cli::commands::proxy::execute(cmd, cli.app),
         Some(Commands::Settings(cmd)) => cc_switch_lib::cli::commands::settings::execute(cmd),
+        Some(Commands::Web(cmd)) => cc_switch_lib::cli::commands::web::execute(cmd, cli.app),
         Some(Commands::Failover(cmd)) => {
             cc_switch_lib::cli::commands::failover::execute(cmd, cli.app)
         }

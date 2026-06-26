@@ -32,6 +32,7 @@ mod store;
 mod sync_policy;
 mod usage_events;
 mod usage_script;
+pub mod web;
 
 #[cfg(test)]
 pub(crate) mod test_support;
