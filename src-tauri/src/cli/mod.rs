@@ -205,6 +205,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_web_serve_tunnel_flags() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "web",
+            "serve",
+            "--assets",
+            "/tmp/a",
+            "--tunnel",
+            "tailscale",
+            "--tunnel-public",
+        ]);
+
+        match cli.command {
+            Some(Commands::Web(super::commands::web::WebCommand::Serve {
+                tunnel,
+                tunnel_public,
+                ..
+            })) => {
+                assert_eq!(
+                    tunnel,
+                    Some(super::commands::web::TunnelProvider::Tailscale)
+                );
+                assert!(tunnel_public);
+            }
+            _ => panic!("expected web serve command with tunnel flags"),
+        }
+    }
+
+    #[test]
     fn parses_use_shortcut_command() {
         let cli = Cli::parse_from(["cc-switch", "use", "demo"]);
 
