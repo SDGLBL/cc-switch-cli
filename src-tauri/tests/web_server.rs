@@ -37,7 +37,7 @@ async fn spawn_server() -> (String, tokio::task::JoinHandle<()>) {
         .expect("write index.html");
 
     let web_state = WebState::new(Arc::new(state), TOKEN.to_string());
-    let router = build_router(web_state, assets);
+    let router = build_router(web_state, Some(assets));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

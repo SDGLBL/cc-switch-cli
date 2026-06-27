@@ -1,18 +1,25 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::services::ServeDir;
 
 use super::{assets, dispatch, events, state::WebState};
 
 /// Body-size cap for `/api/invoke` (settings payloads are small).
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
-/// Build the full router: token-gated `/api/*` plus the static frontend.
+/// Build the full router: token-gated `/api/*` plus the frontend.
+///
+/// `assets_dir = Some(dir)` serves the built frontend from disk (the `--assets`
+/// dev override); `None` serves the frontend embedded into the binary at build
+/// time. Either way `/` and all client-side routes return the SPA shell with
+/// the macOS-window chrome injected.
 ///
 /// Security posture:
 /// - Static assets are public (just the SPA shell); all data lives behind
@@ -20,7 +27,7 @@ const MAX_BODY: usize = 16 * 1024 * 1024;
 /// - The frontend is served same-origin as the API, so no CORS is configured
 ///   (no cross-origin access is intended). This is deliberately stricter than
 ///   the proxy server's permissive `Any` CORS.
-pub fn build_router(state: WebState, assets_dir: PathBuf) -> Router {
+pub fn build_router(state: WebState, assets_dir: Option<PathBuf>) -> Router {
     // Token-protected endpoints (invoke bridge + event stream).
     let protected = Router::new()
         .route("/invoke/:command", post(dispatch::invoke_handler))
@@ -30,11 +37,60 @@ pub fn build_router(state: WebState, assets_dir: PathBuf) -> Router {
     // `/api/health` is public for liveness probing.
     let api = Router::new().route("/health", get(health)).merge(protected);
 
-    Router::new()
+    let base = Router::new()
         .nest("/api", api)
-        .fallback_service(assets::serve_dir(&assets_dir))
+        // The cc-switch favicon (vendored + embedded in the binary).
+        .route("/favicon.png", get(favicon))
+        .route("/favicon.ico", get(favicon));
+
+    let routed = match assets_dir {
+        // Dev override: serve the built frontend from disk.
+        Some(dir) => {
+            let index_html = Arc::new(assets::load_injected_index(&dir));
+            base.nest_service("/assets", ServeDir::new(dir.join("assets")))
+                .fallback(move || {
+                    let index_html = index_html.clone();
+                    async move { Html((*index_html).clone()) }
+                })
+        }
+        // Default: serve the frontend embedded into the binary at build time.
+        None => {
+            let index_html = Arc::new(assets::embedded_index_html().unwrap_or_else(|| {
+                "<!doctype html><meta charset=utf-8><title>CC Switch</title>no embedded frontend"
+                    .to_string()
+            }));
+            base.route("/assets/*path", get(serve_embedded_asset))
+                .fallback(move || {
+                    let index_html = index_html.clone();
+                    async move { Html((*index_html).clone()) }
+                })
+        }
+    };
+
+    routed
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state)
+}
+
+/// Serve a hashed bundle from the embedded frontend, honoring the build-time
+/// gzip compression via `Content-Encoding`.
+async fn serve_embedded_asset(uri: Uri) -> Response {
+    match assets::embedded_asset(uri.path()) {
+        Some(asset) => {
+            let mut builder = Response::builder().header(header::CONTENT_TYPE, asset.content_type);
+            if asset.gzipped {
+                builder = builder.header(header::CONTENT_ENCODING, "gzip");
+            }
+            builder
+                .body(axum::body::Body::from(asset.bytes.to_vec()))
+                .unwrap()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn favicon() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/png")], assets::FAVICON_PNG)
 }
 
 async fn health() -> &'static str {

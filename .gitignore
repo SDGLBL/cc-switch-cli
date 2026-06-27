@@ -1,6 +1,11 @@
 node_modules/
 dist/
 release/
+
+# Built web frontend embedded by src-tauri/build.rs — a build artifact, kept
+# out of git. Populate before a release build via `pnpm build:web` (in the
+# cc-switch project) + copy into ./web-dist, or set CC_SWITCH_WEB_DIST=<path>.
+/web-dist/
 .upstream/
 .tmp/
 .DS_Store

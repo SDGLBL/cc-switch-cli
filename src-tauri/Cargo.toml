@@ -92,6 +92,11 @@ tachyonfx = "0.25"
 winreg = "0.52"
 self-replace = "1"
 
+# Build-time only: gzip-compress the embedded web frontend assets (see build.rs).
+# Does not affect the final binary's dependency set.
+[build-dependencies]
+flate2 = "1.0"
+
 # Optimize release binary size to help reduce AppImage footprint
 [profile.release]
 codegen-units = 1

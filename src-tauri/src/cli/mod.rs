@@ -78,9 +78,8 @@ pub enum Commands {
     #[command(subcommand)]
     Settings(commands::settings::SettingsCommand),
 
-    /// Serve the local web dashboard (shares the cc-switch desktop frontend)
-    #[command(subcommand)]
-    Web(commands::web::WebCommand),
+    /// Open the local web dashboard in a browser (self-contained; loopback)
+    Web(commands::web::WebArgs),
 
     /// Manage automatic failover and provider queue
     #[command(subcommand)]
@@ -185,51 +184,50 @@ mod tests {
     }
 
     #[test]
-    fn parses_web_serve_subcommand() {
-        let cli = Cli::parse_from([
-            "cc-switch",
-            "web",
-            "serve",
-            "--assets",
-            "/tmp/assets",
-            "--port",
-            "0",
-        ]);
+    fn parses_web_command() {
+        // No `serve` subcommand: `cc-switch web` takes the args directly.
+        let cli = Cli::parse_from(["cc-switch", "web", "--port", "0"]);
 
         match cli.command {
-            Some(Commands::Web(super::commands::web::WebCommand::Serve { port, .. })) => {
+            Some(Commands::Web(super::commands::web::WebArgs { port, host, .. })) => {
                 assert_eq!(port, 0);
+                assert_eq!(host, "127.0.0.1");
             }
-            _ => panic!("expected web serve command"),
+            _ => panic!("expected web command"),
         }
     }
 
     #[test]
-    fn parses_web_serve_tunnel_flags() {
-        let cli = Cli::parse_from([
-            "cc-switch",
-            "web",
-            "serve",
-            "--assets",
-            "/tmp/a",
-            "--tunnel",
-            "tailscale",
-            "--tunnel-public",
-        ]);
+    fn parses_web_tunnel_flags() {
+        use super::commands::web::{TunnelProvider, WebArgs};
 
-        match cli.command {
-            Some(Commands::Web(super::commands::web::WebCommand::Serve {
+        // Bare `--tunnel` (no value) defaults to tailscale and must not swallow
+        // the following `--tunnel-public` flag as its value.
+        let bare = Cli::parse_from(["cc-switch", "web", "--tunnel", "--tunnel-public"]);
+        match bare.command {
+            Some(Commands::Web(WebArgs {
                 tunnel,
                 tunnel_public,
                 ..
             })) => {
-                assert_eq!(
-                    tunnel,
-                    Some(super::commands::web::TunnelProvider::Tailscale)
-                );
+                assert_eq!(tunnel, Some(TunnelProvider::Tailscale));
                 assert!(tunnel_public);
             }
-            _ => panic!("expected web serve command with tunnel flags"),
+            _ => panic!("expected web command with bare --tunnel"),
+        }
+
+        // Explicit value still works; no `--tunnel` means no tunnel.
+        let explicit = Cli::parse_from(["cc-switch", "web", "--tunnel", "tailscale"]);
+        match explicit.command {
+            Some(Commands::Web(WebArgs { tunnel, .. })) => {
+                assert_eq!(tunnel, Some(TunnelProvider::Tailscale));
+            }
+            _ => panic!("expected web command with explicit --tunnel"),
+        }
+        let none = Cli::parse_from(["cc-switch", "web"]);
+        match none.command {
+            Some(Commands::Web(WebArgs { tunnel, .. })) => assert_eq!(tunnel, None),
+            _ => panic!("expected web command"),
         }
     }
 
