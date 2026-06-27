@@ -889,6 +889,16 @@ impl UiData {
         Ok(data)
     }
 
+    /// Like [`load`], but skips the usage/pricing aggregation (several DB
+    /// GROUP-BY queries + the pricing snapshot). Used for the active app's
+    /// post-startup full reload so that work is deferred until the Usage view is
+    /// actually opened (`usage`/`pricing` are left at their defaults and filled
+    /// in lazily by the usage-pricing worker).
+    pub fn load_without_usage_pricing(app_type: &AppType) -> Result<Self, AppError> {
+        let state = load_state()?;
+        Self::load_base_from_state(&state, app_type)
+    }
+
     pub(crate) fn load_fast_snapshot_from_state(
         state: &AppState,
         app_type: &AppType,
