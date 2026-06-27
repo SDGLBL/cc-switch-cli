@@ -1344,7 +1344,10 @@ fn handle_app_data_req(
             app_state_epoch,
             app_type,
         } => {
-            let result = UiData::load(&app_type).map_err(|err| err.to_string());
+            // Skip the usage/pricing aggregation here; it is deferred and loaded
+            // lazily by the usage-pricing worker when the Usage view is opened.
+            let result =
+                UiData::load_without_usage_pricing(&app_type).map_err(|err| err.to_string());
             (
                 AppDataLoadKind::Full,
                 request_id,

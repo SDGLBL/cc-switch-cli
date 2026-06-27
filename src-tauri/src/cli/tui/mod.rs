@@ -292,6 +292,23 @@ fn usage_pricing_range_matches_active(
     }
 }
 
+/// Whether a cached `(app, cached_range)` entry already provides the data a
+/// request for `requested` needs. The fixed ranges (Today/7d/30d) are computed
+/// together, so any cached fixed range covers another; a custom range must
+/// match exactly, and fixed/custom never cover each other.
+fn usage_pricing_cache_satisfies(
+    cached: data::UsageRangePreset,
+    requested: data::UsageRangePreset,
+) -> bool {
+    match (cached, requested) {
+        (data::UsageRangePreset::Custom(cached), data::UsageRangePreset::Custom(requested)) => {
+            cached == requested
+        }
+        (data::UsageRangePreset::Custom(_), _) | (_, data::UsageRangePreset::Custom(_)) => false,
+        _ => true,
+    }
+}
+
 fn align_usage_to_active_range(
     usage: &mut data::UsageSnapshot,
     active_range: data::UsageRangePreset,
@@ -607,6 +624,36 @@ impl UiDataByAppCache {
         self.incomplete_by_app.remove(app_type);
     }
 
+    /// Queue a usage/pricing load only if that (app, range) isn't already cached
+    /// or in flight. Used to lazily populate usage when the Usage view opens,
+    /// now that the startup full-load defers the aggregation.
+    fn ensure_usage_pricing_loaded(
+        &mut self,
+        app: &mut App,
+        usage_pricing_req_tx: Option<&mpsc::Sender<UsagePricingReq>>,
+        app_type: &AppType,
+        range: data::UsageRangePreset,
+    ) {
+        if self
+            .pending_usage_pricing_by_key
+            .contains_key(&(app_type.clone(), range))
+        {
+            return;
+        }
+        // A cached fixed range already covers any other fixed range, so don't
+        // re-aggregate when the user toggles Today/7d/30d.
+        let already_cached = self
+            .usage_pricing_by_key
+            .keys()
+            .any(|(cached_app, cached_range)| {
+                cached_app == app_type && usage_pricing_cache_satisfies(*cached_range, range)
+            });
+        if already_cached {
+            return;
+        }
+        self.queue_usage_pricing_load(app, usage_pricing_req_tx, app_type, range);
+    }
+
     fn queue_usage_pricing_load(
         &mut self,
         app: &mut App,
@@ -836,6 +883,33 @@ fn maybe_queue_usage_session_sync(
     }
     *started = true;
     queue_background_session_usage_sync(sync_req_tx, sync_tracker);
+}
+
+/// Lazily load the active app's usage/pricing when a Usage or Pricing view is
+/// shown. The startup full-load no longer computes it, so this fills it in on
+/// demand; the cache guard keeps it from re-querying every frame.
+fn maybe_queue_usage_pricing_on_view(
+    app: &mut App,
+    data_cache: &mut UiDataByAppCache,
+    usage_pricing_req_tx: Option<&mpsc::Sender<UsagePricingReq>>,
+) {
+    let is_usage = matches!(
+        app.route,
+        route::Route::Usage | route::Route::UsageLogs | route::Route::UsageLogDetail { .. }
+    );
+    let is_pricing = matches!(app.route, route::Route::Pricing);
+    if !is_usage && !is_pricing {
+        return;
+    }
+    let app_type = app.app_type.clone();
+    // The Pricing view needs the pricing snapshot, which only fixed ranges
+    // produce (a custom range yields `pricing: None`); force a fixed range there.
+    let range = if is_pricing && matches!(app.usage.range, data::UsageRangePreset::Custom(_)) {
+        data::UsageRangePreset::SevenDays
+    } else {
+        app.usage.range
+    };
+    data_cache.ensure_usage_pricing_loaded(app, usage_pricing_req_tx, &app_type, range);
 }
 
 fn handle_session_usage_sync_msg(
@@ -2169,6 +2243,13 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
             session_usage.as_ref().map(|s| &s.req_tx),
             &mut session_usage_sync,
             &mut session_usage_sync_started,
+        );
+        // Lazily aggregate usage/pricing (deferred off the startup full-load)
+        // once the user is actually on a Usage route.
+        maybe_queue_usage_pricing_on_view(
+            &mut app,
+            &mut data_cache,
+            usage_pricing.as_ref().map(|s| &s.req_tx),
         );
 
         if last_tick.elapsed() >= tick_rate {
