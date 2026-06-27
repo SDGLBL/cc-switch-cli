@@ -1241,11 +1241,12 @@ fn apply_cache_invalidation(
 }
 
 /// Live cross-process refresh. If another process (e.g. `cc-switch web serve`)
-/// committed to the shared SQLite DB since the last poll, reload everything
-/// fresh via the same path DB-replacing operations use
-/// (`CacheInvalidation::AppStateRecreated`). Skipped while an overlay is open so
-/// the user isn't interrupted mid-interaction. `last_version` is seeded with the
-/// startup value, so this fires only on a genuine external change.
+/// committed to the shared SQLite DB since the last poll, drop all cached state
+/// (`CacheInvalidation::AppStateRecreated`) and re-read the currently-visible
+/// app's data from the DB so the change actually appears on screen. Skipped
+/// while an overlay is open so the user isn't interrupted mid-interaction;
+/// `last_version` is seeded with the startup value, so this fires only on a
+/// genuine external change.
 #[allow(clippy::too_many_arguments)]
 fn poll_external_db_change(
     app: &mut App,
@@ -1268,6 +1269,8 @@ fn poll_external_db_change(
         return;
     }
     *last_version = Some(version);
+    // Drop every cached worker/app snapshot — any app's rows may have changed
+    // under us, so all caches are now suspect.
     if let Err(err) = apply_cache_invalidation(
         app,
         data,
@@ -1278,6 +1281,23 @@ fn poll_external_db_change(
         CacheInvalidation::AppStateRecreated,
     ) {
         log::debug!("external DB change reload failed: {err}");
+        return;
+    }
+    // `AppStateRecreated` only *clears* caches. In the action-driven path the
+    // action handler then supplies the fresh rows, but the poll path has no
+    // action, so without this the on-screen data would stay stale until an
+    // unrelated user action. Re-read the currently-visible app's data from the
+    // DB now (queues a `FullLoad`; the just-dropped worker cache forces a fresh
+    // DB read) so an external web/CLI edit actually appears in the running TUI.
+    if let Err(err) = apply_current_app_data_changed(
+        app,
+        data,
+        data_cache,
+        quota_req_tx,
+        app_data_req_tx,
+        usage_pricing_req_tx,
+    ) {
+        log::debug!("external DB change current-app reload failed: {err}");
     }
 }
 
