@@ -1391,6 +1391,23 @@ fn poll_external_db_change(
         return;
     }
     *last_version = Some(version);
+    // The in-memory settings cache (per-app current-provider, etc.) is loaded
+    // once at startup and is NOT derived from the SQLite DB, so the data_version
+    // probe alone won't pick up an external `settings.json` change (e.g. another
+    // process switching the current provider). Reload it here so the
+    // current-provider resolved during the reload below reflects the change.
+    if let Err(err) = crate::settings::reload_settings() {
+        log::debug!("external DB change: settings reload failed: {err}");
+    }
+    // `reload_settings()` re-reads settings.json, but an external switch commits
+    // the DB current *before* (and independently of) writing settings.json, and
+    // `get_effective_current_provider` lets the cached settings value win over
+    // the DB. Resolve the current provider from the DB (authoritative — it's
+    // what `data_version` tracks) so the reload below reflects the external
+    // switch instead of a stale/racy settings value.
+    if let Err(err) = crate::settings::sync_current_providers_from_db(probe) {
+        log::debug!("external DB change: current-provider sync from DB failed: {err}");
+    }
     // Drop every cached worker/app snapshot — any app's rows may have changed
     // under us, so all caches are now suspect.
     if let Err(err) = apply_cache_invalidation(
@@ -2223,7 +2240,25 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                 event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let key = normalize_key_event(key);
                     let action = app.on_key(key, &data);
-                    if let Err(err) = handle_tui_action(
+                    // A data-changing action (e.g. provider switch) commits on a
+                    // different connection than the read-only probe, so the probe
+                    // sees our own write as "external" and the next poll would
+                    // fire a heavy global reload (the switch lag). For those
+                    // actions only — they already self-refresh via
+                    // `apply_cache_invalidation` — snapshot the probe so we can
+                    // adopt our own write's version below. Non-data-changing
+                    // actions are left alone so an external commit landing during
+                    // them is still picked up by the poll (they don't self-refresh).
+                    let action_changes_data = !matches!(
+                        cache_invalidation_for_action(&action),
+                        CacheInvalidation::None
+                    );
+                    let version_before = if action_changes_data {
+                        version_probe.as_ref().and_then(|db| db.data_version().ok())
+                    } else {
+                        None
+                    };
+                    let action_result = handle_tui_action(
                         &mut terminal,
                         &mut app,
                         &mut data,
@@ -2245,7 +2280,29 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                         quota.as_ref().map(|s| &s.req_tx),
                         usage_pricing.as_ref().map(|s| &s.req_tx),
                         action,
-                    ) {
+                    );
+                    // For a data-changing action that succeeded and was the only
+                    // thing to bump data_version since the last poll baseline,
+                    // adopt the new version so the poll skips our own write. The
+                    // `version_before == last_data_version` guard avoids absorbing
+                    // an external change that was already pending before this
+                    // action. (A genuinely concurrent external commit during the
+                    // action's own window can still be folded in — unavoidable
+                    // with a separate probe connection — but the gate above keeps
+                    // that to deliberate data-changing actions, not every key.)
+                    if action_changes_data
+                        && action_result.is_ok()
+                        && version_before == last_data_version
+                    {
+                        if let Some(after) =
+                            version_probe.as_ref().and_then(|db| db.data_version().ok())
+                        {
+                            if Some(after) != version_before {
+                                last_data_version = Some(after);
+                            }
+                        }
+                    }
+                    if let Err(err) = action_result {
                         if matches!(
                             &err,
                             AppError::Localized { key, .. } if *key == "tui_terminal_error"

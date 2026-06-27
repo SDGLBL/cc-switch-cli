@@ -39,7 +39,17 @@ pub fn spawn_db_change_watcher(state: WebState) {
             last = current;
             // Another connection committed: refresh our snapshot so subsequent
             // reads are fresh, then nudge browsers to refetch.
+            //
+            // `refresh_config_from_db()` only rebuilds the DB-derived config
+            // snapshot. The current provider is resolved via
+            // `get_effective_current_provider`, which lets the process-global
+            // `settings_store` cache win over the DB — so also reload settings
+            // and make DB current authoritative, otherwise `get_current_provider`
+            // keeps returning this process's stale cached current after a switch
+            // made by the TUI/another process.
             let _ = state.app.refresh_config_from_db();
+            let _ = crate::settings::reload_settings();
+            let _ = crate::settings::sync_current_providers_from_db(&state.app.db);
             let _ = state
                 .events
                 .send(json!({ "event": "db-changed" }).to_string());

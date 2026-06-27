@@ -948,6 +948,31 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
     update_settings(settings)
 }
 
+/// Refresh the in-memory per-app current-provider for the switch-based apps
+/// (Claude/Codex/Gemini) from the DB's authoritative `is_current`, WITHOUT
+/// writing `settings.json` to disk.
+///
+/// Used by the TUI's external-change poll. Another process's provider switch
+/// commits the DB current first (bumping `PRAGMA data_version`, which is what
+/// triggers the poll) and writes `settings.json` separately. Because
+/// `get_effective_current_provider` lets the cached settings value win over the
+/// DB, a reload triggered by the DB commit would otherwise resolve a stale
+/// current. Syncing the in-memory cache from the DB makes that reload
+/// authoritative and prevents a later in-process settings write from clobbering
+/// `settings.json` back to the stale value. Additive apps resolve current
+/// elsewhere, so they are intentionally left untouched.
+pub fn sync_current_providers_from_db(db: &crate::database::Database) -> Result<(), AppError> {
+    // Read the DB before taking the settings lock to keep the lock hold short.
+    let claude = db.get_current_provider(AppType::Claude.as_str())?;
+    let codex = db.get_current_provider(AppType::Codex.as_str())?;
+    let gemini = db.get_current_provider(AppType::Gemini.as_str())?;
+    let mut guard = settings_store().write().expect("写入设置锁失败");
+    guard.current_provider_claude = claude;
+    guard.current_provider_codex = codex;
+    guard.current_provider_gemini = gemini;
+    Ok(())
+}
+
 pub fn get_visible_apps() -> VisibleApps {
     settings_store()
         .read()
