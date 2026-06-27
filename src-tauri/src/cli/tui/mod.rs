@@ -334,6 +334,11 @@ fn align_usage_to_active_range(
 pub(crate) enum CacheInvalidation {
     None,
     CurrentAppDataChanged,
+    /// The current app's data was fully reloaded fresh (e.g. the post-startup
+    /// SyncLive refresh, or a current-app mutation's reload). Only the current
+    /// app's cache entry is refreshed; other apps' pre-seeded snapshots are kept
+    /// (their DB rows weren't touched), so a cold switch to them stays instant.
+    CurrentAppReloaded,
     DataReloaded,
     AppStateRecreated,
 }
@@ -526,6 +531,7 @@ impl UiDataByAppCache {
         &mut self,
         app_data_req_tx: &mpsc::Sender<AppDataReq>,
         app_type: &AppType,
+        extra_apps: &[AppType],
     ) -> Result<PendingAppDataLoad, AppError> {
         if self.pending_by_app.contains_key(app_type) {
             return Err(AppError::Message(
@@ -542,14 +548,44 @@ impl UiDataByAppCache {
         };
         self.pending_by_app.insert(app_type.clone(), pending);
         self.incomplete_by_app.insert(app_type.clone());
+
+        // Warm the remaining visible apps from the same in-memory snapshot the
+        // worker already holds, so the first switch to them renders real data
+        // instead of the empty "no providers" placeholder. Each gets its own
+        // pending Initial entry keyed by request_id; they share generation/epoch.
+        let mut extras: Vec<(AppType, u64)> = Vec::new();
+        for extra in extra_apps {
+            if extra == app_type || self.pending_by_app.contains_key(extra) {
+                continue;
+            }
+            self.next_app_data_request_id = self.next_app_data_request_id.wrapping_add(1);
+            let extra_request_id = self.next_app_data_request_id;
+            self.pending_by_app.insert(
+                extra.clone(),
+                PendingAppDataLoad {
+                    kind: AppDataLoadKind::Initial,
+                    request_id: extra_request_id,
+                    generation: pending.generation,
+                    app_state_epoch: pending.app_state_epoch,
+                },
+            );
+            self.incomplete_by_app.insert(extra.clone());
+            extras.push((extra.clone(), extra_request_id));
+        }
+
         if let Err(err) = app_data_req_tx.send(AppDataReq::InitialLoad {
             request_id: pending.request_id,
             generation: pending.generation,
             app_state_epoch: pending.app_state_epoch,
             app_type: app_type.clone(),
+            extras: extras.clone(),
         }) {
             self.pending_by_app.remove(app_type);
             self.incomplete_by_app.remove(app_type);
+            for (extra, _) in &extras {
+                self.pending_by_app.remove(extra);
+                self.incomplete_by_app.remove(extra);
+            }
             return Err(AppError::Message(format!(
                 "Initial app data load request failed: {err}"
             )));
@@ -692,6 +728,9 @@ impl UiDataByAppCache {
     ) {
         match invalidation {
             CacheInvalidation::None | CacheInvalidation::CurrentAppDataChanged => {}
+            // Current app reloaded fresh: keep every other app's cache (and the
+            // data_generation) intact; only the current entry is refreshed below.
+            CacheInvalidation::CurrentAppReloaded => {}
             CacheInvalidation::DataReloaded => self.clear(),
             CacheInvalidation::AppStateRecreated => self.clear_after_app_state_recreated(),
         }
@@ -890,13 +929,17 @@ fn handle_app_data_msg(
                         data_cache.mark_app_data_loaded(&app_type);
                         if app.app_type == app_type {
                             *data = loaded;
+                            // A full reload of the CURRENT app must not wipe the
+                            // pre-seeded snapshots of the other apps (their DB rows
+                            // weren't touched), so scope the invalidation to the
+                            // current app instead of a global clear.
                             if let Err(err) = apply_loaded_data_cache_invalidation(
                                 app,
                                 data,
                                 data_cache,
                                 quota_req_tx,
                                 usage_pricing_req_tx,
-                                CacheInvalidation::DataReloaded,
+                                CacheInvalidation::CurrentAppReloaded,
                             ) {
                                 app.push_toast(err.to_string(), ToastKind::Warning);
                             }
@@ -977,9 +1020,12 @@ fn handle_initial_app_data_msg(
                 AppDataLoadFinish::Stale | AppDataLoadFinish::Ignored => return Ok(false),
             }
 
-            let mut loaded = result.map_err(AppError::Message)?;
-            data_cache.mark_app_data_loaded(&app_type);
             if app.app_type == app_type {
+                // The active app must load for the UI to be usable, so a failure
+                // here still aborts startup and leaves it "incomplete" (unchanged
+                // behavior: mark_app_data_loaded only runs after a successful load).
+                let mut loaded = result.map_err(AppError::Message)?;
+                data_cache.mark_app_data_loaded(&app_type);
                 loaded.quota = data.quota.clone();
                 *data = loaded;
                 app.overlay = startup_overlay.take().unwrap_or(Overlay::None);
@@ -993,7 +1039,13 @@ fn handle_initial_app_data_msg(
                 data_cache.remember_current(&app.app_type, data);
                 queue_current_quota_refresh_if_due(app, data, quota_req_tx);
             } else {
-                data_cache.by_app.insert(app_type, loaded);
+                // A pre-seeded extra app only warms the cache. Mark it done either
+                // way; on failure skip the insert so the first switch falls back to
+                // a lazy load instead of aborting startup over a non-active app.
+                data_cache.mark_app_data_loaded(&app_type);
+                if let Ok(loaded) = result {
+                    data_cache.by_app.insert(app_type, loaded);
+                }
             }
             Ok(true)
         }
@@ -1200,7 +1252,7 @@ fn apply_current_app_data_changed(
                 data_cache,
                 quota_req_tx,
                 usage_pricing_req_tx,
-                CacheInvalidation::DataReloaded,
+                CacheInvalidation::CurrentAppReloaded,
             )
         }
     }
@@ -1469,6 +1521,12 @@ fn queue_sessions_refresh_if_needed(
         return;
     }
 
+    // Reuse a fresh cached scan so toggling between apps is instant; `r`
+    // (Action::SessionsRefresh) bypasses this path and always re-scans.
+    if app.sessions.restore_from_scan_cache(&provider_id) {
+        return;
+    }
+
     let Some(tx) = session_req_tx else {
         app.sessions.loading = false;
         app.sessions.loaded_once = true;
@@ -1581,6 +1639,14 @@ fn should_exit_after_initial_loading(
     quit_requested: bool,
 ) -> bool {
     !initial_data_loading && !has_initial_data_error && quit_requested
+}
+
+/// Apps whose startup snapshot (SnapshotOnly `UiData`) is a pure in-memory read
+/// of the already-loaded `MultiAppConfig`, cheap enough to eagerly pre-seed at
+/// startup. Additive apps (OpenCode/Hermes/OpenClaw) read live config files even
+/// in SnapshotOnly mode, so they are excluded and lazy-load on first switch.
+fn is_lightweight_preseed_app(app_type: &AppType) -> bool {
+    matches!(app_type, AppType::Claude | AppType::Codex | AppType::Gemini)
 }
 
 pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
@@ -1763,7 +1829,21 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
     let mut initial_loading_quit_requested = false;
     if let Some(app_data) = app_data.as_ref() {
         initial_data_loading = true;
-        if let Err(err) = data_cache.queue_initial_app_data_load(&app_data.req_tx, &app.app_type) {
+        // Pre-seed the OTHER visible apps from the same startup snapshot so cold
+        // switches are instant — but only the lightweight ones whose snapshot is
+        // a pure in-memory read (Claude/Codex/Gemini). Additive apps
+        // (OpenCode/Hermes/OpenClaw) read live config files even in SnapshotOnly
+        // mode, so they are left to lazy-load on first switch (the providers
+        // loading state covers the brief gap) rather than pay that I/O at startup.
+        let extra_apps: Vec<AppType> = crate::settings::get_visible_apps()
+            .ordered_enabled()
+            .into_iter()
+            .filter(|candidate| candidate != &app.app_type)
+            .filter(is_lightweight_preseed_app)
+            .collect();
+        if let Err(err) =
+            data_cache.queue_initial_app_data_load(&app_data.req_tx, &app.app_type, &extra_apps)
+        {
             initial_data_loading = false;
             initial_data_error = Some(err);
         }

@@ -166,6 +166,11 @@ pub struct ProvidersSnapshot {
     pub current_id: String,
     pub rows: Vec<ProviderRow>,
     pub live_ids: HashSet<String>,
+    /// True only for the transient projection shown while a cold-switched app's
+    /// real data is still loading. Lets the renderer show a "loading" state
+    /// instead of the "no providers / import config" empty CTA, so a freshly
+    /// switched-to app never momentarily looks empty.
+    pub loading: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -936,7 +941,10 @@ impl UiData {
         proxy.current_app_target = None;
 
         Self {
-            providers: ProvidersSnapshot::default(),
+            providers: ProvidersSnapshot {
+                loading: true,
+                ..ProvidersSnapshot::default()
+            },
             mcp: self.mcp.clone(),
             prompts: PromptsSnapshot::default(),
             config: self.config.loading_projection(app_type),
@@ -1192,6 +1200,7 @@ fn load_providers_with_mode(
         current_id,
         rows,
         live_ids,
+        loading: false,
     })
 }
 
