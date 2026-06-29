@@ -977,6 +977,39 @@ mod tests {
 
     #[test]
     #[serial(home_settings)]
+    fn app_cycles_with_chinese_brackets() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+        crate::settings::set_visible_apps(crate::settings::VisibleApps {
+            claude: true,
+            codex: true,
+            gemini: true,
+            opencode: true,
+            hermes: false,
+            openclaw: true,
+        })
+        .expect("save visible apps");
+        let mut app = App::new(Some(AppType::Claude));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('】')), &data()),
+            Action::SetAppType(AppType::Codex)
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('【')), &data()),
+            Action::SetAppType(AppType::OpenClaw)
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('］')), &data()),
+            Action::SetAppType(AppType::Codex)
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('［')), &data()),
+            Action::SetAppType(AppType::OpenClaw)
+        ));
+    }
+
+    #[test]
+    #[serial(home_settings)]
     fn app_cycles_through_opencode() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = TestEnvGuard::isolated(temp_home.path());

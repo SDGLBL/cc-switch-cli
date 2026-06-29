@@ -584,12 +584,12 @@ impl App {
                 self.prepare_filter_focus();
                 return Action::None;
             }
-            KeyCode::Char('[') => {
+            KeyCode::Char('[') | KeyCode::Char('【') | KeyCode::Char('［') => {
                 return cycle_app_type(&self.app_type, -1)
                     .map(Action::SetAppType)
                     .unwrap_or(Action::None);
             }
-            KeyCode::Char(']') => {
+            KeyCode::Char(']') | KeyCode::Char('】') | KeyCode::Char('］') => {
                 return cycle_app_type(&self.app_type, 1)
                     .map(Action::SetAppType)
                     .unwrap_or(Action::None);
