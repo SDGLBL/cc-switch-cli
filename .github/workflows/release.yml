@@ -381,6 +381,8 @@ jobs:
           body: |
             Use the assets below for platform packages, checksums, and update metadata.
 
+            **极致优化性能，解决多数历史遗留问题，建议更新**
+
             Install on macOS/Linux:
 
             ```bash
