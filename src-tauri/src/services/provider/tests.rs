@@ -708,6 +708,58 @@ fn codex_switch_preserves_base_url_and_wire_api_across_multiple_switches() {
 
 #[test]
 #[serial]
+fn codex_switch_preserves_modelhub_root_url_after_snapshot_refresh() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = TestEnvGuard::isolated(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "modelhub".to_string();
+        let mut provider = Provider::with_id(
+            "modelhub".to_string(),
+            "ModelHub".to_string(),
+            json!({
+                "auth": {},
+                "config": "model_provider = \"modelhub\"\nmodel = \"gpt-5.5-2026-04-24\"\n\n[model_providers.modelhub]\nname = \"modelhub\"\nbase_url = \"http://127.0.0.1:15722/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n\n[model_providers.modelhub.query_params]\napi-version = \"2025-04-01-preview\"\nak = \"test-ak\"\n",
+                "modelhubRootUrl": "https://modelhub.example/root",
+            }),
+            None,
+        );
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("modelhub_codex".to_string()),
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        manager.providers.insert("modelhub".to_string(), provider);
+    }
+
+    let state = state_from_config(config);
+
+    ProviderService::switch(&state, AppType::Codex, "modelhub")
+        .expect("switch should refresh live snapshot");
+
+    let guard = state.config.read().expect("read config");
+    let provider = guard
+        .get_manager(&AppType::Codex)
+        .and_then(|manager| manager.providers.get("modelhub"))
+        .expect("modelhub provider exists");
+    assert_eq!(
+        provider
+            .settings_config
+            .get("modelhubRootUrl")
+            .and_then(Value::as_str),
+        Some("https://modelhub.example/root")
+    );
+}
+
+#[test]
+#[serial]
 fn codex_switch_backfills_effective_current_and_preserves_runtime_projects() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());

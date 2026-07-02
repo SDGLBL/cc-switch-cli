@@ -3,6 +3,34 @@ use std::fs;
 use std::path::Path;
 
 impl ProviderService {
+    pub(super) fn restore_codex_provider_local_fields(settings: &mut Value, source: &Provider) {
+        if source
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref())
+            != Some("modelhub_codex")
+        {
+            return;
+        }
+
+        let Some(root_url) = source
+            .settings_config
+            .get("modelhubRootUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+
+        if let Some(settings_obj) = settings.as_object_mut() {
+            settings_obj.insert(
+                "modelhubRootUrl".to_string(),
+                Value::String(root_url.to_string()),
+            );
+        }
+    }
+
     pub(crate) fn capture_codex_temp_launch_snapshot(
         state: &AppState,
         provider_id: &str,
@@ -48,11 +76,13 @@ impl ProviderService {
         let mut raw_settings = serde_json::Map::new();
         raw_settings.insert("auth".to_string(), auth);
         raw_settings.insert("config".to_string(), Value::String(cfg_text_for_storage));
+        let mut raw_settings = Value::Object(raw_settings);
+        Self::restore_codex_provider_local_fields(&mut raw_settings, &provider);
 
         let settings_to_store = Self::normalize_settings_config_for_storage(
             &AppType::Codex,
             &provider,
-            Value::Object(raw_settings),
+            raw_settings,
             common_snippet.as_deref(),
         )?;
 
@@ -394,7 +424,9 @@ impl ProviderService {
                 raw_settings.insert("auth".to_string(), auth);
             }
             raw_settings.insert("config".to_string(), Value::String(text));
-            snapshot_provider.settings_config = Value::Object(raw_settings);
+            let mut settings = Value::Object(raw_settings);
+            Self::restore_codex_provider_local_fields(&mut settings, &current_provider);
+            snapshot_provider.settings_config = settings;
             snapshot_provider = Self::migrate_provider_snapshot_for_storage(
                 &AppType::Codex,
                 &snapshot_provider,
@@ -405,7 +437,9 @@ impl ProviderService {
             if let Some(auth) = auth.clone() {
                 raw_settings.insert("auth".to_string(), auth);
             }
-            snapshot_provider.settings_config = Value::Object(raw_settings);
+            let mut settings = Value::Object(raw_settings);
+            Self::restore_codex_provider_local_fields(&mut settings, &current_provider);
+            snapshot_provider.settings_config = settings;
         };
         if let Some(manager) = config.get_manager_mut(&AppType::Codex) {
             if let Some(current) = manager.providers.get_mut(current_id) {

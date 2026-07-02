@@ -964,6 +964,7 @@ impl ProviderService {
                         provider.id
                     );
                 }
+                Self::restore_codex_provider_local_fields(&mut settings_for_storage, &provider);
                 if Self::codex_live_write_category(&provider) == Some("official") {
                     if let Err(err) =
                         crate::codex_config::strip_codex_unified_session_bucket_from_settings(
