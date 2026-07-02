@@ -1219,6 +1219,52 @@ pub fn build_codex_provider_config_toml(
     .join("\n")
 }
 
+pub fn upsert_codex_provider_query_params<I, K, V>(
+    config: String,
+    provider_key: &str,
+    params: I,
+) -> String
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let params: Vec<(String, String)> = params
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.as_ref().trim();
+            let value = value.as_ref().trim();
+            (!key.is_empty() && !value.is_empty()).then(|| (key.to_string(), value.to_string()))
+        })
+        .collect();
+    if params.is_empty() {
+        return config;
+    }
+
+    let Ok(mut doc) = config.parse::<toml_edit::DocumentMut>() else {
+        return config;
+    };
+    let Some(provider_table) = doc
+        .get_mut("model_providers")
+        .and_then(|item| item.as_table_mut())
+        .and_then(|table| table.get_mut(provider_key))
+        .and_then(|item| item.as_table_mut())
+    else {
+        return config;
+    };
+
+    let mut query_params = provider_table
+        .get("query_params")
+        .and_then(|item| item.as_table())
+        .cloned()
+        .unwrap_or_default();
+    for (key, value) in params {
+        query_params.insert(&key, toml_edit::value(value));
+    }
+    provider_table.insert("query_params", toml_edit::Item::Table(query_params));
+    doc.to_string()
+}
+
 pub fn update_codex_config_snippet(
     original: &str,
     base_url: &str,
@@ -1443,6 +1489,42 @@ model = "gpt-5.4"
         let config = "model_provider = ";
 
         assert_eq!(normalize_codex_config_wire_api_to_responses(config), config);
+    }
+
+    #[test]
+    fn upsert_codex_provider_query_params_updates_target_provider() {
+        let config = r#"model_provider = "modelhub"
+model = "gpt-5.5-2026-04-24"
+
+[model_providers.modelhub]
+name = "modelhub"
+base_url = "http://127.0.0.1:15722/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[model_providers.modelhub.query_params]
+ak = "old-ak"
+keep = "yes"
+"#;
+
+        let updated = upsert_codex_provider_query_params(
+            config.to_string(),
+            "modelhub",
+            [("api-version", "2025-04-01-preview"), ("ak", "new-ak")],
+        );
+        let parsed = updated
+            .parse::<toml_edit::DocumentMut>()
+            .expect("updated config should stay valid TOML");
+        let query_params = parsed["model_providers"]["modelhub"]["query_params"]
+            .as_table()
+            .expect("query params table");
+
+        assert_eq!(
+            query_params["api-version"].as_str(),
+            Some("2025-04-01-preview")
+        );
+        assert_eq!(query_params["ak"].as_str(), Some("new-ak"));
+        assert_eq!(query_params["keep"].as_str(), Some("yes"));
     }
 
     #[test]

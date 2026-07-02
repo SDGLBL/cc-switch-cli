@@ -158,6 +158,16 @@ fn apply_settings_prompt_result_metadata(
     provider: &mut Provider,
     prompt_result: Option<&SettingsConfigPromptResult>,
 ) {
+    if matches!(app_type, AppType::Codex) {
+        if let Some(modelhub_codex) = prompt_result.and_then(|result| result.modelhub_codex.clone())
+        {
+            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+            meta.provider_type = Some("modelhub_codex".to_string());
+            meta.modelhub_codex = Some(modelhub_codex);
+        }
+        return;
+    }
+
     if !matches!(app_type, AppType::Claude) {
         return;
     }
@@ -1519,6 +1529,7 @@ mod tests {
         let prompt_result = SettingsConfigPromptResult {
             settings_config: provider.settings_config.clone(),
             claude_api_key_field: Some(ClaudeApiKeyField::ApiKey),
+            modelhub_codex: None,
         };
 
         apply_settings_prompt_result_metadata(
@@ -1544,6 +1555,7 @@ mod tests {
         let prompt_result = SettingsConfigPromptResult {
             settings_config: provider.settings_config.clone(),
             claude_api_key_field: Some(ClaudeApiKeyField::AuthToken),
+            modelhub_codex: None,
         };
 
         apply_settings_prompt_result_metadata(

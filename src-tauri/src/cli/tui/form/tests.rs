@@ -328,7 +328,7 @@ fn provider_add_form_codex_modelhub_template_matches_provider_contract() {
     assert_eq!(form.codex_modelhub_root_url.value, "");
     form.codex_modelhub_root_url
         .set("https://modelhub.example/root");
-    assert_eq!(form.codex_model.value, "gpt-5.4");
+    assert_eq!(form.codex_model.value, "gpt-5.5-2026-04-24");
     assert_eq!(form.codex_wire_api, CodexWireApi::Responses);
     assert!(form.codex_requires_openai_auth);
     assert!(form.is_codex_modelhub_provider());
@@ -339,19 +339,20 @@ fn provider_add_form_codex_modelhub_template_matches_provider_contract() {
     let provider = form.to_provider_json_value();
     assert!(provider.get("category").is_none());
     assert_eq!(provider["meta"]["providerType"], "modelhub_codex");
-    assert!(provider["meta"].get("apiFormat").is_none());
-    assert_eq!(provider["settingsConfig"]["auth"], json!({}));
     assert_eq!(
-        provider["settingsConfig"]["modelhubRootUrl"],
+        provider["meta"]["modelhubCodex"]["rootUrl"],
         "https://modelhub.example/root"
     );
+    assert!(provider["meta"].get("apiFormat").is_none());
+    assert_eq!(provider["settingsConfig"]["auth"], json!({}));
+    assert!(provider["settingsConfig"].get("modelhubRootUrl").is_none());
     assert!(provider["settingsConfig"].get("modelCatalog").is_none());
 
     let cfg = provider["settingsConfig"]["config"]
         .as_str()
         .expect("settingsConfig.config should be TOML string");
     assert!(cfg.contains("model_provider = \"modelhub\""));
-    assert!(cfg.contains("model = \"gpt-5.4\""));
+    assert!(cfg.contains("model = \"gpt-5.5-2026-04-24\""));
     assert!(cfg.contains("base_url = \"http://127.0.0.1:15722/v1\""));
     assert!(cfg.contains("wire_api = \"responses\""));
     assert!(cfg.contains("requires_openai_auth = true"));

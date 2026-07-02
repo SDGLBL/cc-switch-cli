@@ -170,9 +170,9 @@ fn populate_claude_form(form: &mut ProviderAddFormState, provider: &Provider) {
 
 fn populate_codex_form(form: &mut ProviderAddFormState, provider: &Provider) {
     if let Some(root_url) = provider
-        .settings_config
-        .get("modelhubRootUrl")
-        .and_then(|value| value.as_str())
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.modelhub_codex_root_url())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {

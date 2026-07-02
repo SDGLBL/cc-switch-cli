@@ -62,7 +62,7 @@ pub use mcp::{
     sync_enabled_to_codex, sync_enabled_to_gemini, sync_single_server_to_claude,
     sync_single_server_to_codex, sync_single_server_to_gemini,
 };
-pub use provider::{Provider, ProviderMeta, UsageScript};
+pub use provider::{ModelHubCodexMeta, Provider, ProviderMeta, UsageScript};
 pub use proxy::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 pub use services::{
     AuthService, ConfigService, CredentialStatus, EndpointLatency, ExtraUsage, HealthStatus,

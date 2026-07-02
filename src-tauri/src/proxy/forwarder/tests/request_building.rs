@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     app_config::AppType,
-    provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta},
+    provider::{AuthBinding, AuthBindingSource, ModelHubCodexMeta, Provider, ProviderMeta},
     proxy::{
         forwarder::{ForwardOptions, RequestForwarder},
         providers::copilot_auth::CopilotModel,
@@ -1853,7 +1853,6 @@ name = "modelhub"
 base_url = "http://127.0.0.1:15722/v1"
 wire_api = "responses"
 requires_openai_auth = true"#,
-            "modelhubRootUrl": modelhub_root_url,
         }),
         website_url: None,
         category: None,
@@ -1862,6 +1861,9 @@ requires_openai_auth = true"#,
         notes: None,
         meta: Some(ProviderMeta {
             provider_type: Some("modelhub_codex".to_string()),
+            modelhub_codex: Some(ModelHubCodexMeta {
+                root_url: Some(modelhub_root_url.to_string()),
+            }),
             ..Default::default()
         }),
         icon: None,

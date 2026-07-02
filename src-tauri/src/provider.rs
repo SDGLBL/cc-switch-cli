@@ -343,6 +343,13 @@ pub struct CodexChatReasoningConfig {
     pub output_format: Option<String>,
 }
 
+/// ModelHub Codex 代理路由元数据
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelHubCodexMeta {
+    #[serde(rename = "rootUrl", skip_serializing_if = "Option::is_none")]
+    pub root_url: Option<String>,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
@@ -424,6 +431,9 @@ pub struct ProviderMeta {
     /// - "github_copilot": GitHub Copilot 供应商
     #[serde(rename = "providerType", skip_serializing_if = "Option::is_none")]
     pub provider_type: Option<String>,
+    /// ModelHub Codex 代理路由配置。该字段属于 cc-switch 元数据，不写入 Codex live config。
+    #[serde(rename = "modelhubCodex", skip_serializing_if = "Option::is_none")]
+    pub modelhub_codex: Option<ModelHubCodexMeta>,
     /// GitHub Copilot 关联账号 ID（仅 github_copilot 供应商使用）
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
@@ -431,6 +441,14 @@ pub struct ProviderMeta {
 }
 
 impl ProviderMeta {
+    pub fn modelhub_codex_root_url(&self) -> Option<&str> {
+        self.modelhub_codex
+            .as_ref()
+            .and_then(|config| config.root_url.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
     pub fn codex_fast_mode_enabled(&self) -> bool {
         self.codex_fast_mode.unwrap_or(false)
     }

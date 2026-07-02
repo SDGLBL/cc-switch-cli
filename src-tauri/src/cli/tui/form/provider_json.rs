@@ -13,6 +13,9 @@ use super::{
     OPENCLAW_DEFAULT_USER_AGENT,
 };
 
+const MODELHUB_CODEX_API_VERSION_ENV: &str = "CC_SWITCH_MODELHUB_API_VERSION";
+const MODELHUB_CODEX_AK_ENV: &str = "CC_SWITCH_MODELHUB_AK";
+
 impl ProviderAddFormState {
     pub fn to_provider_json_value(&self) -> Value {
         let mut provider_obj = match self.extra.clone() {
@@ -158,7 +161,7 @@ impl ProviderAddFormState {
                     } else {
                         existing_config.to_string()
                     };
-                    let config_toml = update_codex_config_snippet(
+                    let mut config_toml = update_codex_config_snippet(
                         &base_config,
                         base_url,
                         model,
@@ -166,6 +169,10 @@ impl ProviderAddFormState {
                         self.codex_requires_openai_auth,
                         self.codex_env_key.value.trim(),
                     );
+                    if self.is_codex_modelhub_provider() {
+                        config_toml =
+                            apply_modelhub_query_params_prefill(config_toml, &provider_key);
+                    }
                     settings_obj.insert("config".to_string(), Value::String(config_toml));
                     if self.codex_local_routing_enabled() && !model_catalog.is_empty() {
                         settings_obj.insert(
@@ -212,20 +219,7 @@ impl ProviderAddFormState {
                         auth_obj.insert("OPENAI_API_KEY".to_string(), json!(api_key));
                     }
 
-                    if self.is_codex_modelhub_provider() {
-                        let root_url = self
-                            .codex_modelhub_root_url
-                            .value
-                            .trim()
-                            .trim_end_matches('/');
-                        if root_url.is_empty() {
-                            settings_obj.remove("modelhubRootUrl");
-                        } else {
-                            settings_obj.insert("modelhubRootUrl".to_string(), json!(root_url));
-                        }
-                    } else {
-                        settings_obj.remove("modelhubRootUrl");
-                    }
+                    settings_obj.remove("modelhubRootUrl");
                 }
             }
             AppType::Gemini => {
@@ -539,6 +533,8 @@ impl ProviderAddFormState {
         let should_write_codex_api_format = matches!(self.app_type, AppType::Codex)
             && !self.is_codex_official_provider()
             && !self.is_codex_modelhub_provider();
+        let should_write_modelhub_codex_meta =
+            matches!(self.app_type, AppType::Codex) && self.is_codex_modelhub_provider();
         let should_write_claude_api_key_field = matches!(self.app_type, AppType::Claude)
             && !self.is_claude_official_provider()
             && !self.is_claude_codex_oauth_provider()
@@ -548,6 +544,7 @@ impl ProviderAddFormState {
         if !should_write_common_config_meta
             && !should_write_claude_api_format
             && !should_write_codex_api_format
+            && !should_write_modelhub_codex_meta
             && !should_write_claude_api_key_field
             && !is_codex_oauth
             && !self.has_usage_script_meta()
@@ -610,9 +607,36 @@ impl ProviderAddFormState {
         }
 
         if matches!(self.app_type, AppType::Codex) {
-            if self.is_codex_official_provider() || self.is_codex_modelhub_provider() {
+            if self.is_codex_modelhub_provider() {
+                meta_obj.insert("providerType".to_string(), json!("modelhub_codex"));
                 meta_obj.remove("apiFormat");
                 meta_obj.remove("codexChatReasoning");
+                let root_url = self
+                    .codex_modelhub_root_url
+                    .value
+                    .trim()
+                    .trim_end_matches('/');
+                if root_url.is_empty() {
+                    meta_obj.remove("modelhubCodex");
+                } else {
+                    meta_obj.insert(
+                        "modelhubCodex".to_string(),
+                        json!({
+                            "rootUrl": root_url,
+                        }),
+                    );
+                }
+            } else if self.is_codex_official_provider() {
+                meta_obj.remove("apiFormat");
+                meta_obj.remove("codexChatReasoning");
+                meta_obj.remove("modelhubCodex");
+                if meta_obj
+                    .get("providerType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "modelhub_codex")
+                {
+                    meta_obj.remove("providerType");
+                }
             } else {
                 let api_format = match self.claude_api_format {
                     ClaudeApiFormat::OpenAiChat => "openai_chat",
@@ -629,6 +653,14 @@ impl ProviderAddFormState {
                     }
                 } else {
                     meta_obj.remove("codexChatReasoning");
+                }
+                meta_obj.remove("modelhubCodex");
+                if meta_obj
+                    .get("providerType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "modelhub_codex")
+                {
+                    meta_obj.remove("providerType");
                 }
             }
         }
@@ -841,6 +873,31 @@ fn normalize_codex_chat_reasoning_for_save(value: &CodexChatReasoningConfig) -> 
     );
 
     Some(Value::Object(obj))
+}
+
+fn apply_modelhub_query_params_prefill(config: String, provider_key: &str) -> String {
+    crate::codex_config::upsert_codex_provider_query_params(
+        config,
+        provider_key,
+        modelhub_query_params_prefill(),
+    )
+}
+
+fn modelhub_query_params_prefill() -> Vec<(&'static str, String)> {
+    [
+        ("api-version", MODELHUB_CODEX_API_VERSION_ENV),
+        ("ak", MODELHUB_CODEX_AK_ENV),
+    ]
+    .into_iter()
+    .filter_map(|(key, env)| trimmed_env(env).map(|value| (key, value)))
+    .collect()
+}
+
+fn trimmed_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn normalize_usage_timeout(raw: &str) -> u64 {

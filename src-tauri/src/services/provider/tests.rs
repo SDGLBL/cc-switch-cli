@@ -727,12 +727,14 @@ fn codex_switch_preserves_modelhub_root_url_after_snapshot_refresh() {
             json!({
                 "auth": {},
                 "config": "model_provider = \"modelhub\"\nmodel = \"gpt-5.5-2026-04-24\"\n\n[model_providers.modelhub]\nname = \"modelhub\"\nbase_url = \"http://127.0.0.1:15722/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n\n[model_providers.modelhub.query_params]\napi-version = \"2025-04-01-preview\"\nak = \"test-ak\"\n",
-                "modelhubRootUrl": "https://modelhub.example/root",
             }),
             None,
         );
         provider.meta = Some(crate::provider::ProviderMeta {
             provider_type: Some("modelhub_codex".to_string()),
+            modelhub_codex: Some(crate::provider::ModelHubCodexMeta {
+                root_url: Some("https://modelhub.example/root".to_string()),
+            }),
             api_format: Some("openai_responses".to_string()),
             ..Default::default()
         });
@@ -751,11 +753,12 @@ fn codex_switch_preserves_modelhub_root_url_after_snapshot_refresh() {
         .expect("modelhub provider exists");
     assert_eq!(
         provider
-            .settings_config
-            .get("modelhubRootUrl")
-            .and_then(Value::as_str),
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.modelhub_codex_root_url()),
         Some("https://modelhub.example/root")
     );
+    assert!(provider.settings_config.get("modelhubRootUrl").is_none());
 }
 
 #[test]

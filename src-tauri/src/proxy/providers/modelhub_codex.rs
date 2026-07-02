@@ -71,15 +71,13 @@ fn is_enabled(provider: &Provider) -> bool {
 
 fn modelhub_root_url(provider: &Provider) -> Result<String, ProxyError> {
     provider
-        .settings_config
-        .get("modelhubRootUrl")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.modelhub_codex_root_url())
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| {
             ProxyError::ConfigError(
-                "ModelHub Codex provider requires settingsConfig.modelhubRootUrl".to_string(),
+                "ModelHub Codex provider requires meta.modelhubCodex.rootUrl".to_string(),
             )
         })
 }
@@ -94,7 +92,7 @@ fn request_model(body: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ProviderMeta;
+    use crate::provider::{ModelHubCodexMeta, ProviderMeta};
 
     fn create_provider(settings_config: Value, provider_type: Option<&str>) -> Provider {
         Provider {
@@ -114,6 +112,15 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    fn create_modelhub_provider(settings_config: Value, root_url: &str) -> Provider {
+        let mut provider = create_provider(settings_config, Some("modelhub_codex"));
+        let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
+        meta.modelhub_codex = Some(ModelHubCodexMeta {
+            root_url: Some(root_url.to_string()),
+        });
+        provider
     }
 
     #[test]
@@ -137,12 +144,7 @@ mod tests {
 
     #[test]
     fn gpt_models_overlay_to_native_responses() {
-        let provider = create_provider(
-            json!({
-                "modelhubRootUrl": "https://modelhub.example/root"
-            }),
-            Some("modelhub_codex"),
-        );
+        let provider = create_modelhub_provider(json!({}), "https://modelhub.example/root");
 
         let overlay = overlay_provider_for_request(&provider, &json!({ "model": "gpt-5.5-codex" }))
             .expect("valid ModelHub config")
@@ -175,12 +177,7 @@ mod tests {
 
     #[test]
     fn non_gpt_models_overlay_to_crawl_with_request_model_catalog() {
-        let provider = create_provider(
-            json!({
-                "modelhubRootUrl": "https://modelhub.example/root"
-            }),
-            Some("modelhub_codex"),
-        );
+        let provider = create_modelhub_provider(json!({}), "https://modelhub.example/root");
 
         let overlay = overlay_provider_for_request(&provider, &json!({ "model": "glm-5.2" }))
             .expect("valid ModelHub config")
@@ -208,12 +205,7 @@ mod tests {
 
     #[test]
     fn overlay_uses_custom_modelhub_root_url() {
-        let provider = create_provider(
-            json!({
-                "modelhubRootUrl": "https://modelhub.example/root/"
-            }),
-            Some("modelhub_codex"),
-        );
+        let provider = create_modelhub_provider(json!({}), "https://modelhub.example/root/");
 
         let overlay = overlay_provider_for_request(&provider, &json!({ "model": "kimi-k2" }))
             .expect("valid ModelHub config")
@@ -235,20 +227,19 @@ mod tests {
         let error = overlay_provider_for_request(&provider, &json!({ "model": "gpt-5.5-codex" }))
             .expect_err("missing ModelHub root should fail");
 
-        assert!(error.to_string().contains("settingsConfig.modelhubRootUrl"));
+        assert!(error.to_string().contains("meta.modelhubCodex.rootUrl"));
     }
 
     #[test]
     fn overlay_keeps_auth_settings_but_rebases_model_to_request() {
-        let provider = create_provider(
+        let provider = create_modelhub_provider(
             json!({
                 "auth": {
                     "OPENAI_API_KEY": "test-key"
                 },
-                "model": "configured-model",
-                "modelhubRootUrl": "https://modelhub.example/root"
+                "model": "configured-model"
             }),
-            Some("modelhub_codex"),
+            "https://modelhub.example/root",
         );
 
         let overlay = overlay_provider_for_request(&provider, &json!({ "model": "kimi-k2" }))

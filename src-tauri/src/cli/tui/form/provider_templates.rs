@@ -19,7 +19,9 @@ wire_api = "responses"
 requires_openai_auth = true"#;
 
 const MODELHUB_CODEX_ROOT_URL_ENV: &str = "CC_SWITCH_MODELHUB_ROOT_URL";
+const MODELHUB_CODEX_MODEL_ENV: &str = "CC_SWITCH_MODELHUB_MODEL";
 const MODELHUB_CODEX_PROXY_BASE_URL: &str = "http://127.0.0.1:15722/v1";
+const MODELHUB_CODEX_DEFAULT_MODEL: &str = "gpt-5.5-2026-04-24";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderTemplateId {
@@ -552,7 +554,7 @@ impl ProviderAddFormState {
                         },
                     });
                     if let Some(root_url) = modelhub_root_url_prefill() {
-                        extra["settingsConfig"]["modelhubRootUrl"] = json!(root_url);
+                        extra["meta"]["modelhubCodex"]["rootUrl"] = json!(root_url);
                         self.codex_modelhub_root_url.set(root_url);
                     } else {
                         self.codex_modelhub_root_url.set("");
@@ -562,7 +564,7 @@ impl ProviderAddFormState {
                     self.website_url.set("");
                     self.codex_api_key.set("");
                     self.codex_base_url.set(MODELHUB_CODEX_PROXY_BASE_URL);
-                    self.codex_model.set("gpt-5.4");
+                    self.codex_model.set(modelhub_model_prefill());
                     self.codex_wire_api = CodexWireApi::Responses;
                     self.codex_requires_openai_auth = true;
                     self.codex_env_key.set("");
@@ -822,8 +824,17 @@ impl ProviderAddFormState {
 }
 
 fn modelhub_root_url_prefill() -> Option<String> {
-    std::env::var(MODELHUB_CODEX_ROOT_URL_ENV)
+    trimmed_env(MODELHUB_CODEX_ROOT_URL_ENV).map(|value| value.trim_end_matches('/').to_string())
+}
+
+fn modelhub_model_prefill() -> String {
+    trimmed_env(MODELHUB_CODEX_MODEL_ENV)
+        .unwrap_or_else(|| MODELHUB_CODEX_DEFAULT_MODEL.to_string())
+}
+
+fn trimmed_env(name: &str) -> Option<String> {
+    std::env::var(name)
         .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
