@@ -18,12 +18,16 @@ base_url = "https://api.deepseek.com"
 wire_api = "responses"
 requires_openai_auth = true"#;
 
+const MODELHUB_CODEX_ROOT_URL_ENV: &str = "CC_SWITCH_MODELHUB_ROOT_URL";
+const MODELHUB_CODEX_PROXY_BASE_URL: &str = "http://127.0.0.1:15722/v1";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderTemplateId {
     Custom,
     ClaudeOfficial,
     CodexOAuth,
     OpenAiOfficial,
+    ModelHub,
     DeepSeek,
     GoogleOAuth,
 }
@@ -208,7 +212,7 @@ static PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 3] = [
     },
 ];
 
-static PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 2] = [
+static PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 3] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::Custom,
         label: "Custom",
@@ -216,6 +220,10 @@ static PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 2] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::OpenAiOfficial,
         label: "OpenAI Official",
+    },
+    ProviderTemplateDef {
+        id: ProviderTemplateId::ModelHub,
+        label: "ModelHub",
     },
 ];
 
@@ -534,6 +542,32 @@ impl ProviderAddFormState {
                     self.codex_env_key.set("");
                     self.reset_codex_local_routing_state();
                 }
+                ProviderTemplateId::ModelHub => {
+                    let mut extra = json!({
+                        "meta": {
+                            "providerType": "modelhub_codex",
+                        },
+                        "settingsConfig": {
+                            "auth": {},
+                        },
+                    });
+                    if let Some(root_url) = modelhub_root_url_prefill() {
+                        extra["settingsConfig"]["modelhubRootUrl"] = json!(root_url);
+                        self.codex_modelhub_root_url.set(root_url);
+                    } else {
+                        self.codex_modelhub_root_url.set("");
+                    }
+                    self.extra = extra;
+                    self.name.set("ModelHub");
+                    self.website_url.set("");
+                    self.codex_api_key.set("");
+                    self.codex_base_url.set(MODELHUB_CODEX_PROXY_BASE_URL);
+                    self.codex_model.set("gpt-5.4");
+                    self.codex_wire_api = CodexWireApi::Responses;
+                    self.codex_requires_openai_auth = true;
+                    self.codex_env_key.set("");
+                    self.reset_codex_local_routing_state();
+                }
                 ProviderTemplateId::DeepSeek => {
                     self.extra = json!({
                         "category": "cn_official",
@@ -785,4 +819,11 @@ impl ProviderAddFormState {
         self.codex_model_catalog_idx = 0;
         self.codex_model_catalog_field = CodexModelCatalogField::Model;
     }
+}
+
+fn modelhub_root_url_prefill() -> Option<String> {
+    std::env::var(MODELHUB_CODEX_ROOT_URL_ENV)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
 }

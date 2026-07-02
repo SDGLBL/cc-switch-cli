@@ -13,7 +13,7 @@ use super::super::{
     model_mapper::{apply_model_mapping, strip_one_m_suffix_for_upstream_from_body},
     providers::{
         apply_codex_chat_upstream_model, claude_api_format_needs_transform, copilot_auth,
-        get_adapter, normalize_anthropic_tool_thinking_history_for_provider,
+        get_adapter, modelhub_codex, normalize_anthropic_tool_thinking_history_for_provider,
         resolve_codex_chat_reasoning_config, should_convert_codex_responses_to_chat,
         transform_codex_chat, AuthStrategy, ProviderAdapter,
     },
@@ -77,6 +77,11 @@ const COPILOT_FINGERPRINT_HEADERS: &[&str] = &[
     "x-agent-task-id",
 ];
 
+pub(super) struct PreparedRequest {
+    pub request: reqwest::RequestBuilder,
+    pub provider: Provider,
+}
+
 struct CopilotOptimization {
     classification: copilot_optimizer::CopilotClassification,
     deterministic_request_id: Option<String>,
@@ -85,6 +90,7 @@ struct CopilotOptimization {
 }
 
 impl RequestForwarder {
+    #[cfg(test)]
     pub(super) async fn prepare_request(
         &self,
         app_type: &AppType,
@@ -94,8 +100,33 @@ impl RequestForwarder {
         headers: &HeaderMap,
         options: ForwardOptions,
     ) -> Result<reqwest::RequestBuilder, ProxyError> {
+        Ok(self
+            .prepare_request_with_effective_provider(
+                app_type, provider, endpoint, body, headers, options,
+            )
+            .await?
+            .request)
+    }
+
+    pub(super) async fn prepare_request_with_effective_provider(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &HeaderMap,
+        options: ForwardOptions,
+    ) -> Result<PreparedRequest, ProxyError> {
         let adapter = get_adapter(app_type);
         let is_claude_request = matches!(app_type, AppType::Claude);
+        let modelhub_overlay = if matches!(app_type, AppType::Codex) {
+            modelhub_codex::overlay_provider_for_request(provider, body)?
+        } else {
+            None
+        };
+        let has_modelhub_overlay = modelhub_overlay.is_some();
+        let effective_provider = modelhub_overlay.unwrap_or_else(|| provider.clone());
+        let provider = &effective_provider;
         let mut upstream_endpoint = self.router.upstream_endpoint(app_type, provider, endpoint);
         let mut base_url = adapter.extract_base_url(provider)?;
         let is_full_url = provider
@@ -130,6 +161,9 @@ impl RequestForwarder {
                 .await;
         } else {
             mapped_body = strip_one_m_suffix_for_upstream_from_body(mapped_body);
+        }
+        if has_modelhub_overlay {
+            modelhub_codex::preserve_request_model(body, &mut mapped_body);
         }
 
         let copilot_optimization = if is_copilot && self.copilot_optimizer_config.enabled {
@@ -260,7 +294,7 @@ impl RequestForwarder {
             || is_streaming_request(&upstream_endpoint, &filtered_body, headers);
         let client = self.client_for_provider(provider);
 
-        build_request(
+        let request = build_request(
             &client,
             &*adapter,
             provider,
@@ -278,7 +312,12 @@ impl RequestForwarder {
             codex_responses_to_chat,
             copilot_optimization.as_ref(),
         )
-        .await
+        .await?;
+
+        Ok(PreparedRequest {
+            request,
+            provider: effective_provider,
+        })
     }
 
     async fn resolve_claude_api_format(

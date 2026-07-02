@@ -39,6 +39,10 @@ fn deepseek_template_index(app_type: AppType) -> usize {
     template_index_by_label(app_type, "DeepSeek")
 }
 
+fn modelhub_template_index(app_type: AppType) -> usize {
+    template_index_by_label(app_type, "ModelHub")
+}
+
 fn normalize_template_provider_json(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("inFailoverQueue");
@@ -118,6 +122,7 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         vec![
             "Custom",
             "OpenAI Official",
+            "ModelHub",
             "* PackyCode",
             "* Cubence",
             "* RunAPI",
@@ -185,6 +190,7 @@ fn cli_provider_templates_match_tui_serializer_output() {
             ProviderAddTemplate::OpenaiOfficial,
             "OpenAI Official",
         ),
+        (AppType::Codex, ProviderAddTemplate::Modelhub, "ModelHub"),
         (
             AppType::Gemini,
             ProviderAddTemplate::GoogleOauth,
@@ -306,6 +312,49 @@ fn provider_add_form_codex_deepseek_template_matches_upstream_preset_values() {
             ],
         })
     );
+}
+
+#[test]
+fn provider_add_form_codex_modelhub_template_matches_provider_contract() {
+    let mut form = ProviderAddFormState::new(AppType::Codex);
+    let existing_ids = Vec::<String>::new();
+
+    form.apply_template(modelhub_template_index(AppType::Codex), &existing_ids);
+
+    assert_eq!(form.id.value, "modelhub");
+    assert_eq!(form.name.value, "ModelHub");
+    assert_eq!(form.website_url.value, "");
+    assert_eq!(form.codex_base_url.value, "http://127.0.0.1:15722/v1");
+    assert_eq!(form.codex_modelhub_root_url.value, "");
+    form.codex_modelhub_root_url
+        .set("https://modelhub.example/root");
+    assert_eq!(form.codex_model.value, "gpt-5.4");
+    assert_eq!(form.codex_wire_api, CodexWireApi::Responses);
+    assert!(form.codex_requires_openai_auth);
+    assert!(form.is_codex_modelhub_provider());
+    let fields = form.fields();
+    assert!(fields.contains(&ProviderAddField::CodexBaseUrl));
+    assert!(fields.contains(&ProviderAddField::CodexModelHubRootUrl));
+
+    let provider = form.to_provider_json_value();
+    assert!(provider.get("category").is_none());
+    assert_eq!(provider["meta"]["providerType"], "modelhub_codex");
+    assert!(provider["meta"].get("apiFormat").is_none());
+    assert_eq!(provider["settingsConfig"]["auth"], json!({}));
+    assert_eq!(
+        provider["settingsConfig"]["modelhubRootUrl"],
+        "https://modelhub.example/root"
+    );
+    assert!(provider["settingsConfig"].get("modelCatalog").is_none());
+
+    let cfg = provider["settingsConfig"]["config"]
+        .as_str()
+        .expect("settingsConfig.config should be TOML string");
+    assert!(cfg.contains("model_provider = \"modelhub\""));
+    assert!(cfg.contains("model = \"gpt-5.4\""));
+    assert!(cfg.contains("base_url = \"http://127.0.0.1:15722/v1\""));
+    assert!(cfg.contains("wire_api = \"responses\""));
+    assert!(cfg.contains("requires_openai_auth = true"));
 }
 
 #[test]

@@ -31,6 +31,7 @@ pub enum ProviderAddTemplate {
     Cubence,
     Dds,
     Deepseek,
+    Modelhub,
 }
 
 impl ProviderAddTemplate {
@@ -48,6 +49,7 @@ impl ProviderAddTemplate {
             Self::Cubence => "cubence",
             Self::Dds => "dds",
             Self::Deepseek => "deepseek",
+            Self::Modelhub => "modelhub",
         }
     }
 
@@ -65,9 +67,13 @@ impl ProviderAddTemplate {
                 | Self::Cubence
                 | Self::Dds
                 | Self::Deepseek
+                | Self::Modelhub
         )
     }
 }
+
+const MODELHUB_CODEX_ROOT_URL_ENV: &str = "CC_SWITCH_MODELHUB_ROOT_URL";
+const MODELHUB_CODEX_PROXY_BASE_URL: &str = "http://127.0.0.1:15722/v1";
 
 const DEEPSEEK_CODEX_CONFIG: &str = r#"model_provider = "custom"
 model = "deepseek-v4-flash"
@@ -298,7 +304,7 @@ const PROVIDER_TEMPLATE_CHOICES_CLAUDE: [ProviderAddTemplateChoice; 9] = [
     },
 ];
 
-const PROVIDER_TEMPLATE_CHOICES_CODEX: [ProviderAddTemplateChoice; 8] = [
+const PROVIDER_TEMPLATE_CHOICES_CODEX: [ProviderAddTemplateChoice; 9] = [
     ProviderAddTemplateChoice {
         template: ProviderAddTemplate::Custom,
         label: "Custom",
@@ -306,6 +312,10 @@ const PROVIDER_TEMPLATE_CHOICES_CODEX: [ProviderAddTemplateChoice; 8] = [
     ProviderAddTemplateChoice {
         template: ProviderAddTemplate::OpenaiOfficial,
         label: "OpenAI Official",
+    },
+    ProviderAddTemplateChoice {
+        template: ProviderAddTemplate::Modelhub,
+        label: "ModelHub",
     },
     ProviderAddTemplateChoice {
         template: ProviderAddTemplate::Packycode,
@@ -514,6 +524,7 @@ fn template_default_name(template: ProviderAddTemplate) -> Result<&'static str, 
         ProviderAddTemplate::OpenaiOfficial => "OpenAI Official",
         ProviderAddTemplate::GoogleOauth => "Google OAuth",
         ProviderAddTemplate::Deepseek => "DeepSeek",
+        ProviderAddTemplate::Modelhub => "ModelHub",
         ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
@@ -533,6 +544,7 @@ fn template_default_website_url(template: ProviderAddTemplate) -> Option<&'stati
         ProviderAddTemplate::OpenaiOfficial => Some("https://chatgpt.com/codex"),
         ProviderAddTemplate::GoogleOauth => Some("https://ai.google.dev"),
         ProviderAddTemplate::Deepseek => Some("https://platform.deepseek.com"),
+        ProviderAddTemplate::Modelhub => None,
         ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
@@ -551,6 +563,7 @@ fn template_default_category(template: ProviderAddTemplate) -> Option<&'static s
         ProviderAddTemplate::Deepseek => Some("cn_official"),
         ProviderAddTemplate::Runapi => Some("aggregator"),
         ProviderAddTemplate::Custom
+        | ProviderAddTemplate::Modelhub
         | ProviderAddTemplate::CodexOauth
         | ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
@@ -592,6 +605,10 @@ fn template_default_meta(
             }),
             ..Default::default()
         }),
+        ProviderAddTemplate::Modelhub => Some(ProviderMeta {
+            provider_type: Some("modelhub_codex".to_string()),
+            ..Default::default()
+        }),
         ProviderAddTemplate::GoogleOauth => Some(ProviderMeta {
             partner_promotion_key: Some("google-official".to_string()),
             ..Default::default()
@@ -621,6 +638,7 @@ fn template_default_icon(template: ProviderAddTemplate) -> Option<&'static str> 
         ProviderAddTemplate::Deepseek => Some("deepseek"),
         ProviderAddTemplate::Runapi => Some("runapi"),
         ProviderAddTemplate::Custom
+        | ProviderAddTemplate::Modelhub
         | ProviderAddTemplate::ClaudeOfficial
         | ProviderAddTemplate::CodexOauth
         | ProviderAddTemplate::OpenaiOfficial
@@ -637,6 +655,7 @@ fn template_default_icon_color(template: ProviderAddTemplate) -> Option<&'static
     match template {
         ProviderAddTemplate::Deepseek => Some("#1E88E5"),
         ProviderAddTemplate::Custom
+        | ProviderAddTemplate::Modelhub
         | ProviderAddTemplate::ClaudeOfficial
         | ProviderAddTemplate::CodexOauth
         | ProviderAddTemplate::OpenaiOfficial
@@ -673,6 +692,7 @@ fn build_provider_template_settings_config(
         })),
         ProviderAddTemplate::OpenaiOfficial => build_codex_official_settings_config(None),
         ProviderAddTemplate::Deepseek => Ok(build_codex_deepseek_settings_config()),
+        ProviderAddTemplate::Modelhub => Ok(build_codex_modelhub_settings_config(provider_id)),
         ProviderAddTemplate::GoogleOauth => Ok(json!({ "env": {} })),
         ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
@@ -706,6 +726,35 @@ fn build_codex_deepseek_settings_config() -> Value {
             ],
         },
     })
+}
+
+fn build_codex_modelhub_settings_config(provider_id: &str) -> Value {
+    let config = crate::codex_config::build_codex_provider_config_toml(
+        provider_id,
+        MODELHUB_CODEX_PROXY_BASE_URL,
+        "gpt-5.4",
+        "responses",
+    )
+    .trim()
+    .to_string();
+
+    let mut settings = json!({
+        "auth": {},
+        "config": config,
+    });
+
+    if let Some(root_url) = modelhub_root_url_prefill() {
+        settings["modelhubRootUrl"] = json!(root_url);
+    }
+
+    settings
+}
+
+fn modelhub_root_url_prefill() -> Option<String> {
+    std::env::var(MODELHUB_CODEX_ROOT_URL_ENV)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn runapi_opencode_settings_config(base_url: &str) -> Result<Value, AppError> {
@@ -1223,6 +1272,7 @@ requires_openai_auth = true
             vec![
                 "Custom",
                 "OpenAI Official",
+                "ModelHub",
                 "* PackyCode",
                 "* Cubence",
                 "* RunAPI",
@@ -1277,6 +1327,10 @@ requires_openai_auth = true
         );
         assert!(
             validate_provider_add_template(&AppType::Claude, ProviderAddTemplate::Deepseek)
+                .is_err()
+        );
+        assert!(
+            validate_provider_add_template(&AppType::Claude, ProviderAddTemplate::Modelhub)
                 .is_err()
         );
     }
@@ -1742,6 +1796,36 @@ requires_openai_auth = true
             reasoning.output_format.as_deref(),
             Some("reasoning_content")
         );
+    }
+
+    #[test]
+    fn cli_codex_modelhub_template_matches_provider_contract() {
+        let provider =
+            build_provider_template_seed(&AppType::Codex, ProviderAddTemplate::Modelhub, &[])
+                .expect("build ModelHub Codex provider");
+
+        assert_eq!(provider.id, "modelhub");
+        assert_eq!(provider.name, "ModelHub");
+        assert_eq!(provider.website_url.as_deref(), None);
+        assert_eq!(provider.category, None);
+        assert_eq!(provider.settings_config["auth"], json!({}));
+        assert!(provider.settings_config.get("modelhubRootUrl").is_none());
+        assert!(provider.settings_config.get("modelCatalog").is_none());
+
+        let config = provider
+            .settings_config
+            .get("config")
+            .and_then(Value::as_str)
+            .expect("ModelHub Codex config should be TOML string");
+        assert!(config.contains("model_provider = \"modelhub\""));
+        assert!(config.contains("model = \"gpt-5.4\""));
+        assert!(config.contains("base_url = \"http://127.0.0.1:15722/v1\""));
+        assert!(config.contains("wire_api = \"responses\""));
+        assert!(config.contains("requires_openai_auth = true"));
+
+        let meta = provider.meta.expect("ModelHub metadata should be present");
+        assert_eq!(meta.provider_type.as_deref(), Some("modelhub_codex"));
+        assert!(meta.api_format.is_none());
     }
 
     #[test]
@@ -3501,6 +3585,11 @@ pub fn prompt_settings_config(
     match app_type {
         AppType::Claude => prompt_claude_config(current, current_meta),
         AppType::Codex => {
+            if current_meta.and_then(|meta| meta.provider_type.as_deref()) == Some("modelhub_codex")
+            {
+                return prompt_codex_modelhub_config(current).map(SettingsConfigPromptResult::new);
+            }
+
             if codex_official {
                 return prompt_codex_official_config(current).map(SettingsConfigPromptResult::new);
             }
@@ -3839,6 +3928,56 @@ fn build_claude_settings_config_from_prompt<'a>(
     }
 
     Value::Object(settings)
+}
+
+/// Codex ModelHub 配置输入
+fn prompt_codex_modelhub_config(current: Option<&Value>) -> Result<Value, AppError> {
+    println!("\n{}", texts::config_codex_header().bright_cyan().bold());
+
+    let existing_root = current
+        .and_then(|v| v.get("modelhubRootUrl"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(modelhub_root_url_prefill);
+
+    let root_url = if let Some(root_url) = existing_root.as_deref() {
+        Text::new("ModelHub root URL:")
+            .with_initial_value(root_url)
+            .with_help_message(&format!(
+                "Required. You can prefill this with {MODELHUB_CODEX_ROOT_URL_ENV}."
+            ))
+            .prompt()
+            .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+    } else {
+        Text::new("ModelHub root URL:")
+            .with_help_message(&format!(
+                "Required. You can prefill this with {MODELHUB_CODEX_ROOT_URL_ENV}."
+            ))
+            .prompt()
+            .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+    };
+    let root_url = root_url.trim().trim_end_matches('/').to_string();
+    if root_url.is_empty() {
+        return Err(AppError::InvalidInput(
+            "ModelHub root URL is required.".to_string(),
+        ));
+    }
+
+    let mut settings = current
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    settings.insert("modelhubRootUrl".to_string(), json!(root_url));
+    let auth = settings
+        .entry("auth".to_string())
+        .or_insert_with(|| json!({}));
+    if !auth.is_object() {
+        *auth = json!({});
+    }
+
+    Ok(Value::Object(settings))
 }
 
 /// Codex 配置输入（第三方/自定义：需要 API Key）

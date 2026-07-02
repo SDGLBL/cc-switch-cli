@@ -11,6 +11,7 @@ pub mod copilot_model_map;
 mod gemini;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
+pub(crate) mod modelhub_codex;
 pub mod streaming;
 pub mod streaming_codex_chat;
 pub mod streaming_gemini;

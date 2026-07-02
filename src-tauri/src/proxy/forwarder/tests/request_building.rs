@@ -1646,6 +1646,142 @@ async fn codex_chat_prepare_request_preserves_query_with_full_chat_endpoint_base
     );
 }
 
+#[tokio::test]
+async fn modelhub_codex_gpt_prepare_request_routes_to_responses_with_query() {
+    let provider = modelhub_codex_provider("https://modelhub.example/root");
+    let (_db, router) = test_router().await;
+    let forwarder = RequestForwarder::new(router).expect("create forwarder");
+    let request_body = json!({
+        "model": "gpt-5.5-codex",
+        "input": "hello"
+    });
+
+    let request = forwarder
+        .prepare_request(
+            &AppType::Codex,
+            &provider,
+            "/v1/responses?ak=test-ak&api-version=2025-04-01-preview",
+            &request_body,
+            &HeaderMap::new(),
+            ForwardOptions {
+                max_retries: 0,
+                request_timeout: Some(Duration::from_secs(2)),
+                bypass_circuit_breaker: true,
+            },
+        )
+        .await
+        .expect("prepare ModelHub GPT request")
+        .build()
+        .expect("build ModelHub GPT request");
+
+    assert_eq!(
+        request.url().as_str(),
+        "https://modelhub.example/root/responses?ak=test-ak&api-version=2025-04-01-preview"
+    );
+
+    let body = request_body_json(&request);
+    assert_eq!(body["model"], "gpt-5.5-codex");
+    assert_eq!(body["input"], "hello");
+    assert!(body.get("messages").is_none());
+}
+
+#[tokio::test]
+async fn modelhub_codex_non_gpt_prepare_request_routes_to_crawl_chat_with_query() {
+    let provider = modelhub_codex_provider("https://modelhub.example/root/");
+    let (_db, router) = test_router().await;
+    let forwarder = RequestForwarder::new(router).expect("create forwarder");
+    let request_body = json!({
+        "model": "kimi-k2.6",
+        "input": "hello"
+    });
+
+    let request = forwarder
+        .prepare_request(
+            &AppType::Codex,
+            &provider,
+            "/v1/responses?ak=test-ak&api-version=2025-04-01-preview",
+            &request_body,
+            &HeaderMap::new(),
+            ForwardOptions {
+                max_retries: 0,
+                request_timeout: Some(Duration::from_secs(2)),
+                bypass_circuit_breaker: true,
+            },
+        )
+        .await
+        .expect("prepare ModelHub crawl request")
+        .build()
+        .expect("build ModelHub crawl request");
+
+    assert_eq!(
+        request.url().as_str(),
+        "https://modelhub.example/root/v2/crawl?ak=test-ak&api-version=2025-04-01-preview"
+    );
+
+    let body = request_body_json(&request);
+    assert_eq!(body["model"], "kimi-k2.6");
+    assert!(body.get("input").is_none());
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"], "hello");
+}
+
+#[tokio::test]
+async fn modelhub_codex_forward_result_returns_effective_chat_provider() {
+    let (base_url, hits, bodies, server) =
+        spawn_scripted_upstream(vec![(StatusCode::OK, json!({"ok": true}))]).await;
+    let provider = modelhub_codex_provider(&base_url);
+    let (_db, router) = test_router().await;
+    let forwarder = RequestForwarder::new(router).expect("create forwarder");
+
+    let response = forwarder
+        .forward_buffered_response(
+            &AppType::Codex,
+            "/v1/responses?ak=test-ak&api-version=2025-04-01-preview",
+            json!({
+                "model": "kimi-k2.6",
+                "input": "hello"
+            }),
+            &HeaderMap::new(),
+            vec![provider],
+            ForwardOptions {
+                max_retries: 0,
+                request_timeout: Some(Duration::from_secs(2)),
+                bypass_circuit_breaker: true,
+            },
+            RectifierConfig::default(),
+        )
+        .await
+        .expect("ModelHub crawl request should succeed");
+
+    assert_eq!(response.response.status, StatusCode::OK);
+    assert_eq!(hits.count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        hits.paths.lock().await.clone(),
+        vec!["/v2/crawl".to_string()],
+        "non-GPT ModelHub requests should hit crawl"
+    );
+    assert!(
+        crate::proxy::providers::should_convert_codex_responses_to_chat(
+            &response.provider,
+            "/v1/responses?ak=test-ak"
+        ),
+        "forwarder must return the effective chat provider for response conversion"
+    );
+    assert_eq!(
+        response
+            .provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.provider_type.as_deref()),
+        Some("modelhub_codex")
+    );
+
+    let sent = bodies.lock().await;
+    assert_eq!(sent[0]["model"], "kimi-k2.6");
+
+    server.abort();
+}
+
 async fn build_request(
     app_type: &AppType,
     provider: &Provider,
@@ -1701,6 +1837,37 @@ fn codex_chat_provider(base_url: &str, model: &str) -> Provider {
         ..Default::default()
     });
     provider
+}
+
+fn modelhub_codex_provider(modelhub_root_url: &str) -> Provider {
+    Provider {
+        id: "modelhub".to_string(),
+        name: "ModelHub".to_string(),
+        settings_config: json!({
+            "auth": {},
+            "config": r#"model_provider = "modelhub"
+model = "gpt-5.4"
+
+[model_providers.modelhub]
+name = "modelhub"
+base_url = "http://127.0.0.1:15722/v1"
+wire_api = "responses"
+requires_openai_auth = true"#,
+            "modelhubRootUrl": modelhub_root_url,
+        }),
+        website_url: None,
+        category: None,
+        created_at: None,
+        sort_index: None,
+        notes: None,
+        meta: Some(ProviderMeta {
+            provider_type: Some("modelhub_codex".to_string()),
+            ..Default::default()
+        }),
+        icon: None,
+        icon_color: None,
+        in_failover_queue: false,
+    }
 }
 
 fn codex_oauth_provider(account_id: Option<&str>) -> Provider {

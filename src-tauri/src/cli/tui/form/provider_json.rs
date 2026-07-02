@@ -178,7 +178,17 @@ impl ProviderAddFormState {
 
                     let api_key = self.codex_api_key.value.trim();
                     if api_key.is_empty() {
-                        if let Some(auth_obj) = settings_obj
+                        if self.is_codex_modelhub_provider() {
+                            let auth_value = settings_obj
+                                .entry("auth".to_string())
+                                .or_insert_with(|| json!({}));
+                            if !auth_value.is_object() {
+                                *auth_value = json!({});
+                            }
+                            if let Some(auth_obj) = auth_value.as_object_mut() {
+                                auth_obj.remove("OPENAI_API_KEY");
+                            }
+                        } else if let Some(auth_obj) = settings_obj
                             .get_mut("auth")
                             .and_then(|value| value.as_object_mut())
                         {
@@ -200,6 +210,21 @@ impl ProviderAddFormState {
                             .as_object_mut()
                             .expect("auth must be a JSON object");
                         auth_obj.insert("OPENAI_API_KEY".to_string(), json!(api_key));
+                    }
+
+                    if self.is_codex_modelhub_provider() {
+                        let root_url = self
+                            .codex_modelhub_root_url
+                            .value
+                            .trim()
+                            .trim_end_matches('/');
+                        if root_url.is_empty() {
+                            settings_obj.remove("modelhubRootUrl");
+                        } else {
+                            settings_obj.insert("modelhubRootUrl".to_string(), json!(root_url));
+                        }
+                    } else {
+                        settings_obj.remove("modelhubRootUrl");
                     }
                 }
             }
@@ -511,8 +536,9 @@ impl ProviderAddFormState {
                 | ClaudeApiFormat::GeminiNative
         ) && matches!(self.app_type, AppType::Claude)
             && !self.is_claude_official_provider();
-        let should_write_codex_api_format =
-            matches!(self.app_type, AppType::Codex) && !self.is_codex_official_provider();
+        let should_write_codex_api_format = matches!(self.app_type, AppType::Codex)
+            && !self.is_codex_official_provider()
+            && !self.is_codex_modelhub_provider();
         let should_write_claude_api_key_field = matches!(self.app_type, AppType::Claude)
             && !self.is_claude_official_provider()
             && !self.is_claude_codex_oauth_provider()
@@ -584,7 +610,7 @@ impl ProviderAddFormState {
         }
 
         if matches!(self.app_type, AppType::Codex) {
-            if self.is_codex_official_provider() {
+            if self.is_codex_official_provider() || self.is_codex_modelhub_provider() {
                 meta_obj.remove("apiFormat");
                 meta_obj.remove("codexChatReasoning");
             } else {

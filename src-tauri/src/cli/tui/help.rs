@@ -264,6 +264,13 @@ fn provider_field_help(app_type: AppType, field: ProviderAddField) -> HelpConten
                 "Provider API key. After saving, it is written using this app's config rules. The preview hides sensitive values.",
             ),
         ),
+        ProviderAddField::CodexModelHubRootUrl => HelpContent::new(
+            "ModelHub Root URL",
+            help_lines(
+                "ModelHub 上游根地址。它只写入 cc-switch provider settings，用于按请求路由；Codex config.toml 仍然指向本地代理。",
+                "ModelHub upstream root URL. It is stored only in cc-switch provider settings for per-request routing; Codex config.toml still points at the local proxy.",
+            ),
+        ),
         ProviderAddField::CodexModel => HelpContent::new(
             texts::model_label(),
             help_lines(

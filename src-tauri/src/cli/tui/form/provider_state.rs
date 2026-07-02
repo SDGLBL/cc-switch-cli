@@ -157,6 +157,7 @@ impl ProviderAddFormState {
             codex_oauth_account_id: None,
             codex_fast_mode: false,
             codex_base_url: TextInput::new(codex_defaults.0),
+            codex_modelhub_root_url: TextInput::new(""),
             codex_model: TextInput::new(codex_defaults.1),
             codex_wire_api: codex_defaults.2,
             codex_requires_openai_auth: codex_defaults.3,
@@ -377,6 +378,9 @@ impl ProviderAddFormState {
             AppType::Codex => {
                 if !self.is_codex_official_provider() {
                     fields.push(ProviderAddField::CodexBaseUrl);
+                    if self.is_codex_modelhub_provider() {
+                        fields.push(ProviderAddField::CodexModelHubRootUrl);
+                    }
                     fields.push(ProviderAddField::CodexModel);
                     fields.push(ProviderAddField::CodexLocalRouting);
                     fields.push(ProviderAddField::CodexApiKey);
@@ -501,6 +505,7 @@ impl ProviderAddFormState {
             ProviderAddField::ClaudeApiKey => Some(&self.claude_api_key),
             ProviderAddField::ClaudeFallbackModel => Some(&self.claude_model),
             ProviderAddField::CodexBaseUrl => Some(&self.codex_base_url),
+            ProviderAddField::CodexModelHubRootUrl => Some(&self.codex_modelhub_root_url),
             ProviderAddField::CodexModel => Some(&self.codex_model),
             ProviderAddField::CodexEnvKey => Some(&self.codex_env_key),
             ProviderAddField::CodexApiKey => Some(&self.codex_api_key),
@@ -551,6 +556,7 @@ impl ProviderAddFormState {
             ProviderAddField::ClaudeApiKey => Some(&mut self.claude_api_key),
             ProviderAddField::ClaudeFallbackModel => Some(&mut self.claude_model),
             ProviderAddField::CodexBaseUrl => Some(&mut self.codex_base_url),
+            ProviderAddField::CodexModelHubRootUrl => Some(&mut self.codex_modelhub_root_url),
             ProviderAddField::CodexModel => Some(&mut self.codex_model),
             ProviderAddField::CodexEnvKey => Some(&mut self.codex_env_key),
             ProviderAddField::CodexApiKey => Some(&mut self.codex_api_key),
@@ -1409,6 +1415,16 @@ impl ProviderAddFormState {
             .eq_ignore_ascii_case("OpenAI Official");
 
         meta_flag || category_flag || website_flag || name_flag
+    }
+
+    pub fn is_codex_modelhub_provider(&self) -> bool {
+        matches!(self.app_type, AppType::Codex)
+            && self
+                .extra
+                .get("meta")
+                .and_then(|meta| meta.get("providerType"))
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == "modelhub_codex")
     }
 
     pub fn codex_local_routing_enabled(&self) -> bool {

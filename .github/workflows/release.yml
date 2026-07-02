@@ -4,15 +4,22 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish, for example v5.8.7-sdg.1'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   RUST_VERSION: 1.91.1
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -27,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -126,6 +135,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -214,6 +225,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -252,7 +265,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p release-assets
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_TAG}"
 
           # macOS Universal
           if [ -f "artifacts/cc-switch-cli-darwin-universal/cc-switch" ]; then
@@ -346,7 +359,7 @@ jobs:
               -s "${key_file}" \
               -m "${asset}" \
               -x "${asset}.minisig" \
-              -t "cc-switch-cli ${GITHUB_REF_NAME}"
+              -t "cc-switch-cli ${RELEASE_TAG}"
           done
 
           for asset in release-assets/cc-switch-cli-*.tar.gz release-assets/cc-switch-cli-*.zip; do
@@ -357,10 +370,10 @@ jobs:
 
           python3 scripts/generate_latest_json.py \
             release-assets \
-            "${GITHUB_REF_NAME}" \
+            "${RELEASE_TAG}" \
             "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-            "https://github.com/SaladDay/cc-switch-cli/releases/download/${GITHUB_REF_NAME}" \
-            "CC Switch CLI ${GITHUB_REF_NAME}"
+            "https://github.com/SDGLBL/cc-switch-cli/releases/download/${RELEASE_TAG}" \
+            "CC Switch CLI ${RELEASE_TAG}"
 
           rm -f release-assets/*.minisig
 
@@ -373,8 +386,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: CC Switch CLI ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: CC Switch CLI ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -384,7 +397,7 @@ jobs:
             Install on macOS/Linux:
 
             ```bash
-            curl -fsSL https://github.com/SaladDay/cc-switch-cli/releases/latest/download/install.sh | bash
+            curl -fsSL https://github.com/SDGLBL/cc-switch-cli/releases/latest/download/install.sh | bash
             ```
           files: release-assets/*
         env:

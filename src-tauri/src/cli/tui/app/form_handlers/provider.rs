@@ -100,6 +100,11 @@ impl App {
                 && provider.codex_base_url.is_blank()
             {
                 Some(texts::base_url_empty_error())
+            } else if matches!(provider.app_type, crate::app_config::AppType::Codex)
+                && provider.is_codex_modelhub_provider()
+                && provider.codex_modelhub_root_url.is_blank()
+            {
+                Some("ModelHub root URL is required.")
             } else if let Some(message) = validate_usage_query_form(provider) {
                 Some(message)
             } else if !provider.ensure_generated_id(&data.existing_provider_ids()) {

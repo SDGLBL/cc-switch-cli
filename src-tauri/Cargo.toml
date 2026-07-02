@@ -1,10 +1,10 @@
 [package]
 name = "cc-switch"
-version = "5.8.6"
+version = "5.8.7-sdg.1"
 description = "All-in-One Assistant for Claude Code, Codex, Gemini, OpenCode & OpenClaw"
 authors = ["Jason Young", "saladday"]
 license = "MIT"
-repository = "https://github.com/saladday/cc-switch-cli"
+repository = "https://github.com/SDGLBL/cc-switch-cli"
 edition = "2021"
 rust-version = "1.91.1"
 

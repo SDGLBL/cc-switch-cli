@@ -169,6 +169,16 @@ fn populate_claude_form(form: &mut ProviderAddFormState, provider: &Provider) {
 }
 
 fn populate_codex_form(form: &mut ProviderAddFormState, provider: &Provider) {
+    if let Some(root_url) = provider
+        .settings_config
+        .get("modelhubRootUrl")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form.codex_modelhub_root_url.set(root_url);
+    }
+
     let mut parsed_wire_api = None;
     if let Some(config) = provider
         .settings_config

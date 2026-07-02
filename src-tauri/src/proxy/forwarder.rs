@@ -100,11 +100,13 @@ enum StreamingRequestError {
 
 struct BufferedAttemptOutcome {
     response: BufferedResponse,
+    provider: Provider,
     attempt_decision: AttemptDecision,
 }
 
 struct StreamingAttemptOutcome {
     response: StreamingResponse,
+    provider: Provider,
     attempt_decision: AttemptDecision,
 }
 
@@ -236,6 +238,7 @@ impl RequestForwarder {
                 .await
             {
                 Ok(outcome) => {
+                    let effective_provider = outcome.provider;
                     let response = outcome.response;
                     if response.status().is_success() {
                         if !bypass_circuit_breaker {
@@ -251,7 +254,10 @@ impl RequestForwarder {
                                 .await;
                         }
 
-                        return Ok(ForwardedResponse { provider, response });
+                        return Ok(ForwardedResponse {
+                            provider: effective_provider,
+                            response,
+                        });
                     }
 
                     match outcome.attempt_decision {
@@ -268,12 +274,15 @@ impl RequestForwarder {
 
                             if claude_error_path && !provider_needs_transform {
                                 return Err(ForwardFailure::new(
-                                    Some(provider),
+                                    Some(effective_provider),
                                     streaming_response_to_upstream_error(response),
                                 ));
                             }
 
-                            return Ok(ForwardedResponse { provider, response });
+                            return Ok(ForwardedResponse {
+                                provider: effective_provider,
+                                response,
+                            });
                         }
                         AttemptDecision::ProviderFailure => {
                             if !bypass_circuit_breaker {
@@ -294,12 +303,14 @@ impl RequestForwarder {
 
                             if claude_error_path && !provider_needs_transform {
                                 last_error = Some(ForwardFailure::new(
-                                    Some(provider.clone()),
+                                    Some(effective_provider.clone()),
                                     streaming_response_to_upstream_error(response),
                                 ));
                             } else {
-                                pending_upstream_response =
-                                    Some(ForwardedResponse { provider, response });
+                                pending_upstream_response = Some(ForwardedResponse {
+                                    provider: effective_provider,
+                                    response,
+                                });
                                 last_error = Some(ForwardFailure::new(
                                     pending_upstream_response
                                         .as_ref()
@@ -334,7 +345,10 @@ impl RequestForwarder {
                                     .await;
                             }
 
-                            return Ok(ForwardedResponse { provider, response });
+                            return Ok(ForwardedResponse {
+                                provider: effective_provider,
+                                response,
+                            });
                         }
                     }
                 }
@@ -482,6 +496,7 @@ impl RequestForwarder {
                 .await
             {
                 Ok(outcome) => {
+                    let effective_provider = outcome.provider;
                     let response = outcome.response;
                     if response.status.is_success() {
                         if !bypass_circuit_breaker {
@@ -497,7 +512,10 @@ impl RequestForwarder {
                                 .await;
                         }
 
-                        return Ok(ForwardedResponse { provider, response });
+                        return Ok(ForwardedResponse {
+                            provider: effective_provider,
+                            response,
+                        });
                     }
 
                     match outcome.attempt_decision {
@@ -514,12 +532,15 @@ impl RequestForwarder {
 
                             if claude_error_path && !provider_needs_transform {
                                 return Err(ForwardFailure::new(
-                                    Some(provider),
+                                    Some(effective_provider),
                                     buffered_response_to_upstream_error(response),
                                 ));
                             }
 
-                            return Ok(ForwardedResponse { provider, response });
+                            return Ok(ForwardedResponse {
+                                provider: effective_provider,
+                                response,
+                            });
                         }
                         AttemptDecision::ProviderFailure => {
                             if !bypass_circuit_breaker {
@@ -540,12 +561,14 @@ impl RequestForwarder {
 
                             if claude_error_path && !provider_needs_transform {
                                 last_error = Some(ForwardFailure::new(
-                                    Some(provider.clone()),
+                                    Some(effective_provider.clone()),
                                     buffered_response_to_upstream_error(response),
                                 ));
                             } else {
-                                pending_upstream_response =
-                                    Some(ForwardedResponse { provider, response });
+                                pending_upstream_response = Some(ForwardedResponse {
+                                    provider: effective_provider,
+                                    response,
+                                });
                                 last_error = Some(ForwardFailure::new(
                                     pending_upstream_response
                                         .as_ref()
@@ -580,7 +603,10 @@ impl RequestForwarder {
                                     .await;
                             }
 
-                            return Ok(ForwardedResponse { provider, response });
+                            return Ok(ForwardedResponse {
+                                provider: effective_provider,
+                                response,
+                            });
                         }
                     }
                 }
@@ -662,8 +688,8 @@ impl RequestForwarder {
         let mut rectifier_retried = false;
 
         'request_loop: loop {
-            let base_request = self
-                .prepare_request(
+            let prepared_request = self
+                .prepare_request_with_effective_provider(
                     app_type,
                     provider,
                     endpoint,
@@ -673,6 +699,8 @@ impl RequestForwarder {
                 )
                 .await
                 .map_err(StreamingRequestError::BeforeResponse)?;
+            let effective_provider = prepared_request.provider;
+            let base_request = prepared_request.request;
             let mut attempt = 0u32;
 
             loop {
@@ -713,6 +741,7 @@ impl RequestForwarder {
                         if response.status().is_success() {
                             return Ok(StreamingAttemptOutcome {
                                 response: StreamingResponse::Live(response),
+                                provider: effective_provider.clone(),
                                 attempt_decision: AttemptDecision::FatalStop,
                             });
                         }
@@ -745,6 +774,7 @@ impl RequestForwarder {
                                     rectifier_retried,
                                 ),
                                 response: StreamingResponse::Buffered(buffered_response),
+                                provider: effective_provider.clone(),
                             });
                         }
 
@@ -754,6 +784,7 @@ impl RequestForwarder {
                                 rectifier_retried,
                             ),
                             response: StreamingResponse::Live(response),
+                            provider: effective_provider.clone(),
                         });
                     }
                     Ok(Err(error)) => {
@@ -814,8 +845,8 @@ impl RequestForwarder {
         let allow_transport_retry = uses_internal_transport_retry(app_type);
 
         'request_loop: loop {
-            let base_request = self
-                .prepare_request(
+            let prepared_request = self
+                .prepare_request_with_effective_provider(
                     app_type,
                     provider,
                     endpoint,
@@ -825,6 +856,8 @@ impl RequestForwarder {
                 )
                 .await
                 .map_err(BufferedRequestError::BeforeResponse)?;
+            let effective_provider = prepared_request.provider;
+            let base_request = prepared_request.request;
             let mut attempt = 0u32;
 
             loop {
@@ -921,6 +954,7 @@ impl RequestForwarder {
                                 rectifier_retried,
                             ),
                             response: buffered_response,
+                            provider: effective_provider.clone(),
                         });
                     }
                     Ok(Err(error)) => {

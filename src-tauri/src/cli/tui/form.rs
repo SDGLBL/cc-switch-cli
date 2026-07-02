@@ -192,6 +192,7 @@ pub enum ProviderAddField {
     CodexOAuthAccount,
     CodexFastMode,
     CodexBaseUrl,
+    CodexModelHubRootUrl,
     CodexModel,
     CodexLocalRouting,
     #[allow(dead_code)]
@@ -455,6 +456,7 @@ pub struct ProviderAddFormState {
     pub codex_fast_mode: bool,
 
     pub codex_base_url: TextInput,
+    pub codex_modelhub_root_url: TextInput,
     pub codex_model: TextInput,
     pub codex_wire_api: CodexWireApi,
     pub codex_requires_openai_auth: bool,

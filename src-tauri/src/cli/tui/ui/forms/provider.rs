@@ -1178,6 +1178,7 @@ pub(crate) fn provider_field_label_and_value(
         ProviderAddField::CodexOAuthAccount => texts::tui_label_chatgpt_account().to_string(),
         ProviderAddField::CodexFastMode => texts::tui_label_codex_fast_mode().to_string(),
         ProviderAddField::CodexBaseUrl => texts::tui_label_base_url().to_string(),
+        ProviderAddField::CodexModelHubRootUrl => "ModelHub Root URL".to_string(),
         ProviderAddField::CodexModel => texts::model_label().to_string(),
         ProviderAddField::CodexLocalRouting => texts::tui_label_codex_local_routing().to_string(),
         ProviderAddField::CodexWireApi => {
